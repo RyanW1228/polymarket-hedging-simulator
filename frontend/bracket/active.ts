@@ -20,6 +20,7 @@ export function getActiveTeamIdsForMatch(
     const m = bracket.matchesById[id];
     if (!m) return [];
 
+    // Winner picked => only winner is active (100%/0% logic)
     if (m.winnerId) {
       const out = [m.winnerId];
       memo.set(id, out);
@@ -28,11 +29,13 @@ export function getActiveTeamIdsForMatch(
 
     const feeders = m.feederMatchIds ?? [];
     if (feeders.length === 0) {
+      // Leaf match => both teams are active until a winner is picked
       const out = [m.teamAId, m.teamBId].filter(Boolean) as Id[];
       memo.set(id, out);
       return out;
     }
 
+    // Non-leaf => union active teams from feeders
     const set = new Set<Id>();
     for (const pid of feeders) {
       for (const tid of dfs(pid)) set.add(tid);

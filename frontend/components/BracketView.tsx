@@ -25,6 +25,16 @@ function fmtPct(midStr: string | null | undefined): string | null {
   return `${pct.toFixed(1)}%`;
 }
 
+function roundTitle(roundIdx: number, totalRounds: number): string {
+  const fromEnd = totalRounds - 1 - roundIdx; // 0 = Final, 1 = Semis, ...
+  if (fromEnd === 0) return "Final";
+  if (fromEnd === 1) return "Semifinals";
+  if (fromEnd === 2) return "Quarterfinals";
+
+  const remaining = 2 ** (fromEnd + 1); // 3 -> 16, 4 -> 32, ...
+  return `Round of ${remaining}`;
+}
+
 export function BracketView({ bracket, setBracket }: Props) {
   const [editingMatchIds, setEditingMatchIds] = useState<Record<Id, boolean>>(
     {},
@@ -55,6 +65,12 @@ export function BracketView({ bracket, setBracket }: Props) {
   function setMatchMarket(matchId: Id, market: MarketRef | undefined) {
     const next = clone(bracket);
     next.matchesById[matchId] = { ...next.matchesById[matchId], market };
+    setBracket(next);
+  }
+
+  function setMatchWinner(matchId: Id, winnerId: Id | undefined) {
+    const next = clone(bracket);
+    next.matchesById[matchId] = { ...next.matchesById[matchId], winnerId };
     setBracket(next);
   }
 
@@ -156,7 +172,9 @@ export function BracketView({ bracket, setBracket }: Props) {
             key={roundIdx}
             style={{ minWidth: 260, display: "grid", gap: 12 }}
           >
-            <div style={{ fontWeight: 900 }}>Round {roundIdx + 1}</div>
+            <div style={{ fontWeight: 900 }}>
+              {roundTitle(roundIdx, bracket.roundMatchIds.length)}
+            </div>
 
             {matchIds.map((matchId) => {
               const m = bracket.matchesById[matchId];
@@ -167,6 +185,10 @@ export function BracketView({ bracket, setBracket }: Props) {
                 ? bracket.teamsById[m.teamBId]
                 : undefined;
               const editing = isEditing(matchId);
+              const activeTeamIds = getActiveTeamIdsForMatch(bracket, matchId);
+              const activeTeams = activeTeamIds
+                .map((tid) => bracket.teamsById[tid])
+                .filter(Boolean);
 
               const tokA = Array.isArray(m.market?.clobTokenIds)
                 ? m.market?.clobTokenIds?.[0]
@@ -190,97 +212,190 @@ export function BracketView({ bracket, setBracket }: Props) {
                     background: "white",
                   }}
                 >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "flex-end",
-                      gap: 8,
-                    }}
-                  >
-                    <button
-                      onClick={() => toggleEdit(matchId)}
-                      style={{
-                        fontSize: 12,
-                        padding: "4px 8px",
-                        borderRadius: 10,
-                        border: "1px solid #ddd",
-                        background: "white",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {editing ? "Done" : "Edit"}
-                    </button>
-                  </div>
-
-                  {/* Team A */}
-                  {editing ? (
-                    <input
-                      value={teamA?.name ?? ""}
-                      onChange={(e) => {
-                        if (!teamA) return;
-                        setTeamName(teamA.id, e.target.value);
-                      }}
-                      placeholder={teamA ? "Team name" : "—"}
-                      disabled={!teamA}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "1px solid #ccc",
-                        background: !teamA ? "#f7f7f7" : "white",
-                        color: "black",
-                      }}
-                    />
-                  ) : (
+                  {m.round === 1 ? (
                     <div
                       style={{
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        color: "black",
                         display: "flex",
-                        justifyContent: "space-between",
-                        gap: 10,
+                        justifyContent: "flex-end",
+                        gap: 8,
                       }}
                     >
-                      <span>{teamA?.name ?? "—"}</span>
-                      <span style={{ fontWeight: 800 }}>
-                        {pctA ?? (m.market ? "—" : "")}
-                      </span>
+                      <button
+                        onClick={() => toggleEdit(matchId)}
+                        style={{
+                          fontSize: 12,
+                          padding: "4px 8px",
+                          borderRadius: 10,
+                          border: "1px solid #ddd",
+                          background: "white",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {editing ? "Done" : "Edit"}
+                      </button>
                     </div>
-                  )}
+                  ) : null}
 
-                  {/* Team B */}
+                  {/* Teams */}
                   {editing ? (
-                    <input
-                      value={teamB?.name ?? ""}
-                      onChange={(e) => {
-                        if (!teamB) return;
-                        setTeamName(teamB.id, e.target.value);
-                      }}
-                      placeholder={teamB ? "Team name" : "—"}
-                      disabled={!teamB}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "1px solid #ccc",
-                        background: !teamB ? "#f7f7f7" : "white",
-                        color: "black",
-                      }}
-                    />
+                    <>
+                      {/* Team A input */}
+                      <input
+                        value={teamA?.name ?? ""}
+                        onChange={(e) => {
+                          if (!teamA) return;
+                          setTeamName(teamA.id, e.target.value);
+                        }}
+                        placeholder={teamA ? "Team name" : "—"}
+                        disabled={!teamA}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #ccc",
+                          background: !teamA ? "#f7f7f7" : "white",
+                          color: "black",
+                        }}
+                      />
+
+                      {/* Team B input */}
+                      <input
+                        value={teamB?.name ?? ""}
+                        onChange={(e) => {
+                          if (!teamB) return;
+                          setTeamName(teamB.id, e.target.value);
+                        }}
+                        placeholder={teamB ? "Team name" : "—"}
+                        disabled={!teamB}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #ccc",
+                          background: !teamB ? "#f7f7f7" : "white",
+                          color: "black",
+                        }}
+                      />
+                    </>
+                  ) : m.round === 1 ? (
+                    <>
+                      {/* Round 1: clickable rows (pick winner) */}
+                      <div
+                        onClick={() => {
+                          if (!teamA) return;
+                          setMatchWinner(
+                            matchId,
+                            m.winnerId === teamA.id ? undefined : teamA.id,
+                          );
+                        }}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          color: "black",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          cursor: teamA ? "pointer" : "default",
+                          border:
+                            m.winnerId === teamA?.id
+                              ? "2px solid #111"
+                              : "1px solid transparent",
+                          opacity:
+                            m.winnerId && m.winnerId !== teamA?.id ? 0.35 : 1,
+                          userSelect: "none",
+                        }}
+                      >
+                        <span>{teamA?.name ?? "—"}</span>
+                        <span style={{ fontWeight: 800 }}>
+                          {m.winnerId
+                            ? m.winnerId === teamA?.id
+                              ? "100.0%"
+                              : "0.0%"
+                            : (pctA ?? (m.market ? "—" : ""))}
+                        </span>
+                      </div>
+
+                      <div
+                        onClick={() => {
+                          if (!teamB) return;
+                          setMatchWinner(
+                            matchId,
+                            m.winnerId === teamB.id ? undefined : teamB.id,
+                          );
+                        }}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          color: "black",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          cursor: teamB ? "pointer" : "default",
+                          border:
+                            m.winnerId === teamB?.id
+                              ? "2px solid #111"
+                              : "1px solid transparent",
+                          opacity:
+                            m.winnerId && m.winnerId !== teamB?.id ? 0.35 : 1,
+                          userSelect: "none",
+                        }}
+                      >
+                        <span>{teamB?.name ?? "—"}</span>
+                        <span style={{ fontWeight: 800 }}>
+                          {m.winnerId
+                            ? m.winnerId === teamB?.id
+                              ? "100.0%"
+                              : "0.0%"
+                            : (pctB ?? (m.market ? "—" : ""))}
+                        </span>
+                      </div>
+                    </>
                   ) : (
-                    <div
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        color: "black",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 10,
-                      }}
-                    >
-                      <span>{teamB?.name ?? "—"}</span>
-                      <span style={{ fontWeight: 800 }}>
-                        {pctB ?? (m.market ? "—" : "")}
-                      </span>
+                    /* Round 2+: vertical list (like Round 1, but N rows) */
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {activeTeams.length === 0 ? (
+                        <div style={{ opacity: 0.6 }}>—</div>
+                      ) : (
+                        activeTeams.map((t) => {
+                          const isWinner = m.winnerId === t.id;
+                          const isEliminated = Boolean(
+                            m.winnerId && m.winnerId !== t.id,
+                          );
+
+                          return (
+                            <div
+                              key={t.id}
+                              onClick={() =>
+                                setMatchWinner(
+                                  matchId,
+                                  isWinner ? undefined : t.id,
+                                )
+                              }
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 10,
+                                color: "black",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                gap: 10,
+                                cursor: "pointer",
+                                border: isWinner
+                                  ? "2px solid #111"
+                                  : "1px solid transparent",
+                                opacity: isEliminated ? 0.35 : 1,
+                                userSelect: "none",
+                              }}
+                            >
+                              <span>{t.name}</span>
+                              <span style={{ fontWeight: 800 }}>
+                                {m.winnerId
+                                  ? isWinner
+                                    ? "100.0%"
+                                    : "0.0%"
+                                  : ""}
+                              </span>
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
                   )}
 
