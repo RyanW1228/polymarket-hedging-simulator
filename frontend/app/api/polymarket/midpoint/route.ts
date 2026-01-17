@@ -27,7 +27,7 @@ export async function GET(req: Request) {
   if (!res.ok) {
     return NextResponse.json(
       { error: `CLOB midpoint failed: ${res.status}` },
-      { status: 200 },
+      { status: res.status },
     );
   }
 
