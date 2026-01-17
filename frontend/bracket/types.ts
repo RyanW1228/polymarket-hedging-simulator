@@ -10,19 +10,17 @@ export type Team = {
 };
 
 export type MarketRef = {
-  // What the user typed (e.g., "Duke vs UNC winner")
   query: string;
 
-  // Filled after search/attach
+  // Polymarket IDs / metadata
   marketId?: string;
   title?: string;
-
-  // Optional fields you may attach later
-  // (leave undefined until you have real Polymarket data)
-  venue?: "polymarket";
+  slug?: string;
+  conditionId?: string;
+  clobTokenIds?: string[];
   url?: string;
-  yesTokenId?: string;
-  noTokenId?: string;
+
+  venue?: "polymarket";
 };
 
 export type MatchNode = {
