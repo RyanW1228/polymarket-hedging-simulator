@@ -9,6 +9,23 @@ export type Team = {
   name: string;
 };
 
+export type EventMarketLite = {
+  marketId: string;
+  title: string;
+  slug?: string;
+  conditionId?: string;
+  clobTokenIds?: string[];
+  url?: string;
+};
+
+export type EventRef = {
+  eventId: string;
+  title: string;
+  slug?: string;
+  url?: string;
+  markets: EventMarketLite[];
+};
+
 export type MarketRef = {
   query: string;
 
@@ -18,6 +35,9 @@ export type MarketRef = {
   slug?: string;
   conditionId?: string;
   clobTokenIds?: string[];
+  // If the user attached an EVENT (e.g. "Super Bowl Champion 2026"),
+  // store the event + its binary markets here so we can auto-match teams -> markets.
+  event?: EventRef;
 
   // Optional: for multi-outcome markets (e.g., "Who will win the Super Bowl?")
   // If present, outcomes[i].tokenId should correspond to clobTokenIds[i].

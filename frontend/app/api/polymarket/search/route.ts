@@ -57,58 +57,109 @@ type PolymarketEvent = {
   markets?: PolymarketMarket[] | null;
 };
 
+type MarketResult = {
+  kind: "market";
+  marketId: string;
+  title: string;
+  slug?: string;
+  conditionId?: string;
+  clobTokenIds?: string[];
+  url?: string;
+};
+
+type EventResult = {
+  kind: "event";
+  eventId: string;
+  title: string;
+  slug?: string;
+  url?: string;
+
+  // For UI + selection UX
+  marketsCount: number;
+
+  // Lite list of markets in this event (used for auto-matching team names later)
+  markets: Array<{
+    marketId: string;
+    title: string;
+    slug?: string;
+    conditionId?: string;
+    clobTokenIds?: string[];
+    url?: string;
+  }>;
+
+  // Helpful “best candidate” market within this event (for one-click attach later)
+  bestMarket?: {
+    marketId: string;
+    title: string;
+    slug?: string;
+    conditionId?: string;
+    clobTokenIds?: string[];
+    url?: string;
+  };
+};
+
+type AnyResult = (MarketResult | EventResult) & { _score: number };
+
+function keywordBonus(haystack: string, q: string, perHit: number) {
+  const hs = haystack.toLowerCase();
+  const qq = q.toLowerCase();
+  let bonus = 0;
+  for (const w of qq.split(/\s+/).filter(Boolean)) {
+    if (w.length >= 4 && hs.includes(w)) bonus += perHit;
+  }
+  return bonus;
+}
+
+function looksChampionshipLike(s: string) {
+  return /\b(champion|championship|winner|who will win|which team|win the)\b/i.test(
+    s,
+  );
+}
+
 function computeMarketScore(
   marketTitle: string,
   tokenCount: number,
   q: string,
 ) {
-  const t = marketTitle.toLowerCase();
-  const qq = q.toLowerCase();
-
   let score = 0;
 
-  // Prefer multi-outcome
+  // Prefer multi-outcome markets when they exist
   if (tokenCount > 2) score += 200;
 
-  // Prefer championship-ish titles
-  if (
-    /\b(champion|winner|win the|who will win|which team)\b/i.test(marketTitle)
-  )
+  // Prefer championship phrasing
+  if (looksChampionshipLike(marketTitle) || looksChampionshipLike(q))
     score += 60;
 
-  // Demote common yes/no phrasing for single-team props
+  // Demote common yes/no team-prop phrasing
   if (/^will\b/i.test(marketTitle) && tokenCount <= 2) score -= 120;
 
-  // Light keyword match bonus
-  for (const w of qq.split(/\s+/).filter(Boolean)) {
-    if (w.length >= 4 && t.includes(w)) score += 2;
-  }
-
-  // Small additional preference for more outcomes if already multi-outcome
+  score += keywordBonus(marketTitle, q, 2);
   score += Math.min(tokenCount, 64);
 
   return score;
 }
 
-function computeEventMatchBoost(eventTitle: string, q: string) {
-  const et = eventTitle.toLowerCase();
-  const qq = q.toLowerCase();
+function computeEventScore(
+  eventTitle: string,
+  marketsCount: number,
+  q: string,
+) {
+  let score = 0;
 
-  let boost = 0;
-  for (const w of qq.split(/\s+/).filter(Boolean)) {
-    if (w.length >= 4 && et.includes(w)) boost += 8; // stronger than market keyword match
-  }
+  // Event-title match is what you want when you type exact event names
+  score += keywordBonus(eventTitle, q, 8);
 
-  // If it looks like a championship query, boost event matches further
-  if (/\b(champion|winner|who will win|win the)\b/i.test(q)) boost += 20;
+  // If query / title looks championship-like, bump events (they often represent “futures”)
+  if (looksChampionshipLike(eventTitle) || looksChampionshipLike(q))
+    score += 30;
 
-  return boost;
+  // Events with many markets are more likely to be “full-on events” (like one market per team)
+  score += Math.min(marketsCount, 100);
+
+  return score;
 }
 
 function pickBestMarketFromEvent(ev: PolymarketEvent, q: string) {
-  const eventTitle = (ev.title ?? ev.name ?? "").trim();
-  const eventBoost = eventTitle ? computeEventMatchBoost(eventTitle, q) : 0;
-
   let best:
     | {
         market: PolymarketMarket;
@@ -124,10 +175,10 @@ function pickBestMarketFromEvent(ev: PolymarketEvent, q: string) {
     const clobTokenIds = normalizeClobTokenIds(m.clobTokenIds);
     const tokenCount = Array.isArray(clobTokenIds) ? clobTokenIds.length : 0;
 
-    const s = computeMarketScore(title, tokenCount, q) + eventBoost;
+    const score = computeMarketScore(title, tokenCount, q);
 
-    if (!best || s > best.score) {
-      best = { market: m, title, score: s };
+    if (!best || score > best.score) {
+      best = { market: m, title, score };
     }
   }
 
@@ -163,44 +214,123 @@ export async function GET(req: Request) {
 
   const data = (await res.json()) as { events?: PolymarketEvent[] | null };
 
-  // Instead of flattening all markets, pick the best market per event
-  const candidates: Array<{
-    marketId: string;
-    title: string;
-    slug: string;
-    conditionId: string;
-    clobTokenIds?: string[];
-    url: string;
-    _score: number;
-  }> = [];
+  const out: AnyResult[] = [];
 
   for (const ev of data.events ?? []) {
+    const eventTitle = (ev.title ?? ev.name ?? "").trim();
+    const eventSlug = (ev.slug ?? "").trim();
+    const markets = Array.isArray(ev.markets) ? ev.markets : [];
+    const marketsCount = markets.length;
+
+    // EVENT RESULT
+    if (eventTitle) {
+      const eventId = String(ev.id ?? eventSlug ?? eventTitle);
+      const eventScore = computeEventScore(eventTitle, marketsCount, q);
+
+      const best = pickBestMarketFromEvent(ev, q);
+      let bestMarket: EventResult["bestMarket"] | undefined;
+
+      if (best) {
+        const m = best.market;
+        const title = best.title;
+        const slug = m.slug ?? "";
+        const conditionId = m.conditionId ?? "";
+        const clobTokenIds = normalizeClobTokenIds(m.clobTokenIds);
+
+        bestMarket = {
+          marketId: String(m.id ?? slug ?? conditionId ?? title),
+          title,
+          slug,
+          conditionId,
+          clobTokenIds,
+          url: slug
+            ? `https://polymarket.com/market/${slug}`
+            : "https://polymarket.com",
+        };
+      }
+
+      const eventMarkets = (ev.markets ?? [])
+        .map((m) => {
+          const title = (m.question ?? m.marketTitle ?? "").trim();
+          if (!title) return null;
+
+          const slug = (m.slug ?? "").trim();
+          const conditionId = (m.conditionId ?? "").trim();
+          const clobTokenIds = normalizeClobTokenIds(m.clobTokenIds);
+
+          return {
+            marketId: String(m.id ?? slug ?? conditionId ?? title),
+            title,
+            slug: slug || undefined,
+            conditionId: conditionId || undefined,
+            clobTokenIds,
+            url: slug
+              ? `https://polymarket.com/market/${slug}`
+              : "https://polymarket.com",
+          };
+        })
+        .filter(Boolean) as EventResult["markets"];
+
+      out.push({
+        kind: "event",
+        eventId,
+        title: eventTitle,
+        slug: eventSlug || undefined,
+        url: eventSlug
+          ? `https://polymarket.com/event/${eventSlug}`
+          : "https://polymarket.com",
+        marketsCount,
+        markets: eventMarkets,
+        bestMarket,
+        _score: eventScore + (best ? Math.max(0, best.score / 10) : 0),
+      });
+    }
+
+    // MARKET RESULTS (still include some markets directly)
+    // We include the “best market per event” so the list remains usable even without event selection UI.
     const best = pickBestMarketFromEvent(ev, q);
-    if (!best) continue;
+    if (best) {
+      const m = best.market;
+      const title = best.title;
+      const slug = m.slug ?? "";
+      const conditionId = m.conditionId ?? "";
+      const clobTokenIds = normalizeClobTokenIds(m.clobTokenIds);
 
-    const m = best.market;
-    const title = best.title;
-    const slug = m.slug ?? "";
-    const conditionId = m.conditionId ?? "";
-    const clobTokenIds = normalizeClobTokenIds(m.clobTokenIds);
-
-    candidates.push({
-      marketId: String(m.id ?? slug ?? conditionId ?? title),
-      title,
-      slug,
-      conditionId,
-      clobTokenIds,
-      url: slug
-        ? `https://polymarket.com/market/${slug}`
-        : "https://polymarket.com",
-      _score: best.score,
-    });
+      out.push({
+        kind: "market",
+        marketId: String(m.id ?? slug ?? conditionId ?? title),
+        title,
+        slug,
+        conditionId,
+        clobTokenIds,
+        url: slug
+          ? `https://polymarket.com/market/${slug}`
+          : "https://polymarket.com",
+        _score: best.score + keywordBonus(eventTitle, q, 3), // modest boost from event title match
+      });
+    }
   }
 
-  // Sort by score and return top N
-  candidates.sort((a, b) => b._score - a._score);
+  out.sort((a, b) => b._score - a._score);
 
-  const results = candidates.slice(0, limit).map(({ _score, ...rest }) => rest);
+  // de-dupe by (kind,id)
+  const seen = new Set<string>();
+  const results: Array<MarketResult | EventResult> = [];
+  for (const r of out) {
+    const key =
+      r.kind === "market"
+        ? `m:${r.marketId}`
+        : `e:${(r as EventResult).eventId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // strip _score
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { _score, ...rest } = r;
+    results.push(rest as any);
+
+    if (results.length >= limit) break;
+  }
 
   return NextResponse.json({ results });
 }
