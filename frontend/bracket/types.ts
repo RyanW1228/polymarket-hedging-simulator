@@ -39,7 +39,13 @@ export type MatchNode = {
   // Winner (points to Team.id)
   winnerId?: Id;
 
-  // For bracket wiring (where the winner advances)
+  // NEW: for wiring: matches in the previous round that feed into this match.
+  // Round 1: []
+  // Round 2+: usually [prevMatchId0, prevMatchId1]
+  feederMatchIds: Id[];
+
+  // Keep these if you’re using them elsewhere; not required for the new logic
+  // (You can delete later once everything uses feederMatchIds.)
   parentMatchId?: Id;
   advancesToSlot?: "A" | "B";
 

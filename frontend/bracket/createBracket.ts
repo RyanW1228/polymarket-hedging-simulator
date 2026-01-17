@@ -52,6 +52,8 @@ export function createBracket(
         id,
         round,
         index,
+        winnerId: undefined,
+        feederMatchIds: [],
       };
 
       // Round 1: seed teams into slots A/B
@@ -75,6 +77,28 @@ export function createBracket(
     }
 
     roundMatchIds.push(ids);
+  }
+
+  // --- Feeder wiring (child knows its parents) ---
+  // For round >= 2: match:r{round}:m{index} is fed by two matches in previous round:
+  // prev indices: 2*index and 2*index+1
+  for (let round = 2; round <= nRounds; round++) {
+    const matchesThisRound = nTeams / Math.pow(2, round);
+    for (let index = 0; index < matchesThisRound; index++) {
+      const id = makeMatchId(round, index);
+      const node = matchesById[id];
+      if (!node) continue;
+
+      const prevRound = round - 1;
+      const feeder0 = makeMatchId(prevRound, 2 * index);
+      const feeder1 = makeMatchId(prevRound, 2 * index + 1);
+
+      const feeders: Id[] = [];
+      if (matchesById[feeder0]) feeders.push(feeder0);
+      if (matchesById[feeder1]) feeders.push(feeder1);
+
+      node.feederMatchIds = feeders;
+    }
   }
 
   return {

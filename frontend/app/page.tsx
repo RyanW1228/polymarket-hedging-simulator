@@ -2,21 +2,36 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createBracket } from "../bracket/createBracket";
 import type { BracketState, BracketSize } from "../bracket/types";
 import { CreateBracketPanel } from "../components/CreateBracketPanel";
 import { BracketView } from "../components/BracketView";
 
+const BRACKET_STORAGE_KEY = "correl_bracket_v1";
+
 export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
-  const [bracket, setBracket] = useState<BracketState | null>(null);
+  const [bracket, setBracket] = useState<BracketState | null>(() => {
+    try {
+      const raw = localStorage.getItem(BRACKET_STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw) as BracketState;
+    } catch {
+      return null;
+    }
+  });
 
-  const summary = useMemo(() => {
-    if (!bracket) return null;
-    const rounds = bracket.roundMatchIds.length;
-    const matches = Object.keys(bracket.matchesById).length;
-    return { rounds, matches };
+  useEffect(() => {
+    try {
+      if (!bracket) {
+        localStorage.removeItem(BRACKET_STORAGE_KEY);
+        return;
+      }
+      localStorage.setItem(BRACKET_STORAGE_KEY, JSON.stringify(bracket));
+    } catch {
+      // ignore storage failures
+    }
   }, [bracket]);
 
   function handleCreate(size: BracketSize, teamNames: string[]) {
@@ -34,7 +49,7 @@ export default function Home() {
           alignItems: "center",
         }}
       >
-        <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Correl v1</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Correl</h1>
         <button
           onClick={() => setPanelOpen(true)}
           style={{
@@ -62,12 +77,6 @@ export default function Home() {
           </div>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ fontSize: 14, opacity: 0.8 }}>
-              Created bracket: <b>{bracket.size}</b> teams ·{" "}
-              <b>{summary?.rounds}</b> rounds · <b>{summary?.matches}</b>{" "}
-              matches
-            </div>
-
             <BracketView bracket={bracket} setBracket={setBracket} />
           </div>
         )}
