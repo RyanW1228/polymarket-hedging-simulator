@@ -11,6 +11,7 @@ type SearchResult = {
   slug?: string;
   conditionId?: string;
   clobTokenIds?: string[];
+  outcomes?: { name: string; tokenId: string }[];
   url?: string;
 };
 
@@ -76,6 +77,7 @@ export function MatchMarketSearch({ value, onChange }: Props) {
       conditionId: r.conditionId,
       clobTokenIds: r.clobTokenIds,
       url: r.url,
+      outcomes: r.outcomes,
     };
 
     // If token ids are missing, fetch full market details from Gamma /markets
@@ -86,6 +88,7 @@ export function MatchMarketSearch({ value, onChange }: Props) {
         );
         const full = (await res.json()) as {
           clobTokenIds?: string[] | null;
+          outcomes?: { name: string; tokenId: string }[] | null;
           slug?: string;
           conditionId?: string;
           title?: string;
@@ -95,6 +98,9 @@ export function MatchMarketSearch({ value, onChange }: Props) {
 
         if (!full.error && Array.isArray(full.clobTokenIds)) {
           base.clobTokenIds = full.clobTokenIds;
+          if (Array.isArray(full.outcomes)) {
+            base.outcomes = full.outcomes;
+          }
           if (!base.slug && full.slug) base.slug = full.slug;
           if (!base.conditionId && full.conditionId)
             base.conditionId = full.conditionId;

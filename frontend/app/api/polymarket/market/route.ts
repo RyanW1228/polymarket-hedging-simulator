@@ -40,6 +40,23 @@ function normalizeClobTokenIds(x: unknown): string[] | null {
   return null;
 }
 
+function normalizeOutcomes(x: unknown): string[] | null {
+  // Case 1: already string[]
+  if (Array.isArray(x) && x.every((v) => typeof v === "string")) return x;
+
+  // Case 2: single string that is a JSON array
+  if (typeof x === "string" && x.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(x);
+      if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+        return parsed;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const id = (url.searchParams.get("id") ?? "").trim();
@@ -52,7 +69,6 @@ export async function GET(req: Request) {
     );
   }
 
-  // Gamma Get Markets endpoint :contentReference[oaicite:1]{index=1}
   const gamma = new URL("https://gamma-api.polymarket.com/markets");
   if (id) gamma.searchParams.set("id", id);
   if (slug) gamma.searchParams.set("slug", slug);
@@ -70,19 +86,27 @@ export async function GET(req: Request) {
   }
 
   const data = await res.json();
-
-  // /markets may return an array; normalize to first item
   const market = Array.isArray(data) ? data[0] : data;
 
-  if (!market)
+  if (!market) {
     return NextResponse.json({ error: "Market not found" }, { status: 404 });
+  }
+
+  const tokenIds = normalizeClobTokenIds(market.clobTokenIds);
+  const outcomeNames = normalizeOutcomes(market.outcomes);
+
+  const outcomes =
+    tokenIds && outcomeNames && tokenIds.length === outcomeNames.length
+      ? outcomeNames.map((name, i) => ({ name, tokenId: tokenIds[i] }))
+      : undefined;
 
   return NextResponse.json({
     id: market.id != null ? String(market.id) : undefined,
     title: market.question ?? market.marketTitle ?? "",
     slug: market.slug ?? "",
     conditionId: market.conditionId ?? "",
-    clobTokenIds: normalizeClobTokenIds(market.clobTokenIds),
+    clobTokenIds: tokenIds,
+    outcomes,
     url: market.slug
       ? `https://polymarket.com/market/${market.slug}`
       : "https://polymarket.com",

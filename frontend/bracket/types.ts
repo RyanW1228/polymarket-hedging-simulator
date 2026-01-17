@@ -18,6 +18,11 @@ export type MarketRef = {
   slug?: string;
   conditionId?: string;
   clobTokenIds?: string[];
+
+  // Optional: for multi-outcome markets (e.g., "Who will win the Super Bowl?")
+  // If present, outcomes[i].tokenId should correspond to clobTokenIds[i].
+  outcomes?: { name: string; tokenId: string }[];
+
   url?: string;
 
   venue?: "polymarket";
@@ -48,6 +53,10 @@ export type MatchNode = {
   // (You can delete later once everything uses feederMatchIds.)
   parentMatchId?: Id;
   advancesToSlot?: "A" | "B";
+
+  // For multi-outcome markets: map each active team in this match -> the market's outcome tokenId
+  // Example: { [teamId]: "12345" }
+  outcomeTokenIdByTeamId?: Record<Id, string>;
 
   // Market attached to this match (filled later)
   market?: MarketRef;
