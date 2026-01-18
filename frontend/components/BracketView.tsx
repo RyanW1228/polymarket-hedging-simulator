@@ -119,6 +119,9 @@ export function BracketView({ bracket, setBracket }: Props) {
   }>(null);
 
   const [tradeSharesStr, setTradeSharesStr] = useState<string>("1");
+  const [mergeSharesStr, setMergeSharesStr] = useState<string>("");
+  const [convertSharesStr, setConvertSharesStr] = useState<string>("");
+
   const [hedgeOpen, setHedgeOpen] = useState(false);
   const [learnOpen, setLearnOpen] = useState(false);
 
@@ -146,8 +149,10 @@ export function BracketView({ bracket, setBracket }: Props) {
     },
     {
       id: "normalizeExposure",
-      title: "Step 2 — Normalize to true exposure",
-      text: "All equivalent token positions are summed and converted to YES exposure so we can calculate true exposure across the tournament.",
+      title: "Step 2 — Normalize to True Exposure",
+      text:
+        "For demonstrative purposes, we will convert all NO tokens into YES tokens of the remaining markets. " +
+        "The resulting YES token amount represents the true exposure of each market.",
       requiresAction: true,
       actionLabel: "Compute normalized exposure",
     },
@@ -456,6 +461,217 @@ export function BracketView({ bracket, setBracket }: Props) {
     });
   }
 
+  function cleanSimPos(
+    obj: Record<string, { yes: number; no: number }>,
+  ): Record<string, { yes: number; no: number }> {
+    const out: Record<string, { yes: number; no: number }> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const yes = Number((v as any)?.yes ?? 0);
+      const no = Number((v as any)?.no ?? 0);
+      if (!Number.isFinite(yes) || !Number.isFinite(no)) continue;
+      if (yes <= 0 && no <= 0) continue;
+      out[String(k)] = { yes: Math.max(0, yes), no: Math.max(0, no) };
+    }
+    return out;
+  }
+
+  function mergeEventPair(yesTid: string, noTid: string, shares: number) {
+    if (shares <= 0) return;
+
+    // Return $1 per merged share (complete set)
+    setUsdcBalance((b) => b + shares);
+
+    setSimPosByTokenId((prev) => {
+      const next = { ...prev };
+
+      const y = next[yesTid] ?? { yes: 0, no: 0 };
+      const n = next[noTid] ?? { yes: 0, no: 0 };
+
+      next[yesTid] = { ...y, yes: Math.max(0, (y.yes ?? 0) - shares) };
+      next[noTid] = { ...n, no: Math.max(0, (n.no ?? 0) - shares) };
+
+      return cleanSimPos(next);
+    });
+  }
+
+  function mergeMatchPair(tokA: string, tokB: string, shares: number) {
+    if (shares <= 0) return;
+
+    // Return $1 per merged share (complete set)
+    setUsdcBalance((b) => b + shares);
+
+    setSimPosByTokenId((prev) => {
+      const next = { ...prev };
+
+      const a = next[tokA] ?? { yes: 0, no: 0 };
+      const b = next[tokB] ?? { yes: 0, no: 0 };
+
+      next[tokA] = { ...a, yes: Math.max(0, (a.yes ?? 0) - shares) };
+      next[tokB] = { ...b, yes: Math.max(0, (b.yes ?? 0) - shares) };
+
+      return cleanSimPos(next);
+    });
+  }
+
+  // Merge EVERYTHING possible (used by Hedge Step 1)
+  function mergeAllPossible(): { usdcBack: number; lines: string[] } {
+    const lines: string[] = [];
+    let usdcBack = 0;
+
+    // Work off a local snapshot so we compute merges consistently once
+    const cur = simPosByTokenId;
+    const next: Record<string, { yes: number; no: number }> = clone(cur);
+
+    // ---- 1) Match markets: YES(teamA) + YES(teamB)
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const toks = m.market?.clobTokenIds;
+
+      if (!Array.isArray(toks) || toks.length < 2) continue;
+
+      const t0 = String(toks[0]);
+      const t1 = String(toks[1]);
+
+      const y0 = next[t0]?.yes ?? 0;
+      const y1 = next[t1]?.yes ?? 0;
+
+      const amt = Math.min(y0, y1);
+      if (amt <= 0) continue;
+
+      next[t0] = { ...(next[t0] ?? { yes: 0, no: 0 }), yes: y0 - amt };
+      next[t1] = { ...(next[t1] ?? { yes: 0, no: 0 }), yes: y1 - amt };
+
+      usdcBack += amt;
+
+      const label =
+        m.market?.title ??
+        m.market?.event?.title ??
+        `Match ${matchId.slice(0, 6)}`;
+      lines.push(`Merged ${fmtShares(amt)} complete sets (match): ${label}`);
+    }
+
+    // ---- 2) Event markets: YES(yesTid) + NO(noTid)
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const ems = m.market?.event?.markets;
+      if (!Array.isArray(ems)) continue;
+
+      for (const em of ems) {
+        const yesTidRaw = em?.clobTokenIds?.[0];
+        const noTidRaw = em?.clobTokenIds?.[1];
+        if (!yesTidRaw || !noTidRaw) continue;
+
+        const yesTid = String(yesTidRaw);
+        const noTid = String(noTidRaw);
+
+        const y = next[yesTid]?.yes ?? 0;
+        const n = next[noTid]?.no ?? 0;
+
+        const amt = Math.min(y, n);
+        if (amt <= 0) continue;
+
+        next[yesTid] = { ...(next[yesTid] ?? { yes: 0, no: 0 }), yes: y - amt };
+        next[noTid] = { ...(next[noTid] ?? { yes: 0, no: 0 }), no: n - amt };
+
+        usdcBack += amt;
+
+        const label =
+          em?.title ?? m.market?.event?.title ?? `Event ${matchId.slice(0, 6)}`;
+        lines.push(`Merged ${fmtShares(amt)} complete sets (event): ${label}`);
+      }
+    }
+
+    // Commit position changes + USDC
+    const cleaned = cleanSimPos(next);
+    setSimPosByTokenId(cleaned);
+
+    if (usdcBack > 0) {
+      setUsdcBalance((b) => b + usdcBack);
+    }
+
+    return { usdcBack, lines };
+  }
+
+  function convertEventNoToYesOthers(
+    eventMarkets: Array<{ title: string; clobTokenIds?: string[] }>,
+    noTokenId: string,
+    shares: number,
+  ): { ok: boolean; reason?: string } {
+    if (shares <= 0) return { ok: false, reason: "Shares must be positive." };
+
+    // Identify the "self" market by matching its NO token id at clobTokenIds[1]
+    const self = eventMarkets.find(
+      (mk) => String(mk?.clobTokenIds?.[1] ?? "") === String(noTokenId),
+    );
+    if (!self) return { ok: false, reason: "Could not locate this NO market." };
+
+    // All other YES tokenIds in the same event (exclude self), deduped so we don't double-add
+    const otherYesTokenIds = Array.from(
+      new Set(
+        eventMarkets
+          .filter((mk) => mk !== self)
+          .map((mk) => mk?.clobTokenIds?.[0])
+          .filter((x): x is string => Boolean(x))
+          .map(String),
+      ),
+    );
+
+    if (otherYesTokenIds.length === 0) {
+      return { ok: false, reason: "No other markets to convert into." };
+    }
+
+    // Convert `shares` NO on this market into +`shares` YES on EACH other market (demonstration rule)
+    setSimPosByTokenId((prev) => {
+      const next = { ...prev };
+
+      // Subtract NO
+      const curNo = next[noTokenId] ?? { yes: 0, no: 0 };
+      next[noTokenId] = {
+        ...curNo,
+        no: Math.max(0, (curNo.no ?? 0) - shares),
+      };
+
+      // Add YES to each other market
+      for (const yesTid of otherYesTokenIds) {
+        const curYes = next[yesTid] ?? { yes: 0, no: 0 };
+        next[yesTid] = {
+          ...curYes,
+          yes: (curYes.yes ?? 0) + shares,
+        };
+      }
+
+      return cleanSimPos(next);
+    });
+
+    return { ok: true };
+  }
+
+  // Step 2 helper: normalize ALL event NO positions -> YES of other event markets
+  function normalizeAllEventNoToYes(): { converted: number } {
+    let converted = 0;
+
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const ems = m.market?.event?.markets;
+      if (!Array.isArray(ems) || ems.length < 2) continue;
+
+      // For each event market, if user holds NO on its NO token, convert it
+      for (const mk of ems) {
+        const noTidRaw = mk?.clobTokenIds?.[1];
+        if (!noTidRaw) continue;
+        const noTid = String(noTidRaw);
+
+        const heldNo = simPosByTokenId[noTid]?.no ?? 0;
+        if (heldNo <= 0) continue;
+
+        const res = convertEventNoToYesOthers(ems, noTid, heldNo);
+        if (res.ok) converted += heldNo;
+      }
+    }
+
+    return { converted };
+  }
+
   function openTradeModalForTeam(matchId: Id, teamId: Id) {
     const m = bracket.matchesById[matchId];
     const team = bracket.teamsById[teamId];
@@ -475,6 +691,24 @@ export function BracketView({ bracket, setBracket }: Props) {
         : null;
 
       setTradeSharesStr("1");
+      // Default merge amount = max mergeable
+      if (yesTid && noTid) {
+        const y = simPosByTokenId[yesTid]?.yes ?? 0;
+        const n = simPosByTokenId[noTid]?.no ?? 0;
+        const maxMerge = Math.min(y, n);
+        setMergeSharesStr(maxMerge > 0 ? String(maxMerge) : "");
+      } else {
+        setMergeSharesStr("");
+      }
+
+      // Default convert amount = max NO held on this team’s event market
+      if (noTid) {
+        const heldNo = simPosByTokenId[noTid]?.no ?? 0;
+        setConvertSharesStr(heldNo > 0 ? String(heldNo) : "");
+      } else {
+        setConvertSharesStr("");
+      }
+
       setTradeModal({
         matchId,
         teamId,
@@ -490,6 +724,28 @@ export function BracketView({ bracket, setBracket }: Props) {
     // Prefer the per-team mapping if present (Round 1 sets it).
     const mappedTok = m.outcomeTokenIdByTeamId?.[teamId];
     const yesTok = mappedTok ? String(mappedTok) : null;
+
+    // Default merge amount = max mergeable across both teams in this match
+    const toks = m.market?.clobTokenIds;
+    const otherTeamId = teamId === m.teamAId ? m.teamBId : m.teamAId;
+
+    const otherTokRaw =
+      (otherTeamId ? m.outcomeTokenIdByTeamId?.[otherTeamId] : undefined) ??
+      (Array.isArray(toks) && toks.length >= 2
+        ? String(teamId === m.teamAId ? toks[1] : toks[0])
+        : null);
+
+    const thisTok = yesTok;
+    const otherTok = otherTokRaw ? String(otherTokRaw) : null;
+
+    if (thisTok && otherTok) {
+      const a = simPosByTokenId[thisTok]?.yes ?? 0;
+      const b = simPosByTokenId[otherTok]?.yes ?? 0;
+      const maxMerge = Math.min(a, b);
+      setMergeSharesStr(maxMerge > 0 ? String(maxMerge) : "");
+    } else {
+      setMergeSharesStr("");
+    }
 
     setTradeSharesStr("1");
     setTradeModal({
@@ -508,13 +764,29 @@ export function BracketView({ bracket, setBracket }: Props) {
 
   function executeHedgeStep(stepId: HedgeStep["id"]) {
     if (stepId === "mergePairs") {
-      appendHedgeNote("Step 1 executed: merged YES/NO pairs (stub).");
+      const { usdcBack, lines } = mergeAllPossible();
+      if (usdcBack <= 0) {
+        appendHedgeNote("Step 1 executed: no mergeable pairs found.");
+        return;
+      }
+      appendHedgeNote(
+        `Step 1 executed: merged complete sets and returned $${usdcBack.toFixed(
+          2,
+        )} USDC.`,
+      );
+      for (const l of lines.slice(0, 12)) appendHedgeNote(l);
+      if (lines.length > 12) appendHedgeNote(`…and ${lines.length - 12} more.`);
       return;
     }
 
     if (stepId === "normalizeExposure") {
+      const { converted } = normalizeAllEventNoToYes();
+      if (converted <= 0) {
+        appendHedgeNote("Step 2 executed: no NO tokens found to normalize.");
+        return;
+      }
       appendHedgeNote(
-        "Step 2 executed: computed normalized YES exposure (stub).",
+        `Step 2 executed: normalized ${fmtShares(converted)} NO shares into YES across the remaining markets (demo equal-split).`,
       );
       return;
     }
@@ -676,13 +948,26 @@ export function BracketView({ bracket, setBracket }: Props) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      {/* Block the main UI while Hedging Assistant is running */}
+      {hedgeTutorOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.08)",
+            zIndex: 65, // below the tutor (70), above everything else
+            pointerEvents: "auto",
+          }}
+        />
+      ) : null}
+
       {/* Top row above rounds + USDC balance (same width as buttons row) */}
       <div style={{ width: "fit-content", display: "grid", gap: 12 }}>
         <div>
           <button
             onClick={refreshOdds}
             style={{
-              fontSize: 12,
+              fontSize: 14,
               padding: "6px 10px",
               borderRadius: 10,
               border: "1px solid #ddd",
@@ -701,7 +986,7 @@ export function BracketView({ bracket, setBracket }: Props) {
               } catch {}
             }}
             style={{
-              fontSize: 12,
+              fontSize: 14,
               padding: "6px 10px",
               borderRadius: 10,
               border: "1px solid #ddd",
@@ -716,7 +1001,7 @@ export function BracketView({ bracket, setBracket }: Props) {
           <button
             onClick={() => setHedgeOpen(true)}
             style={{
-              fontSize: 12,
+              fontSize: 14,
               padding: "6px 10px",
               borderRadius: 10,
               border: "1px solid #ddd",
@@ -743,7 +1028,7 @@ export function BracketView({ bracket, setBracket }: Props) {
             width: "100%",
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.8 }}>
             USDC Balance
           </div>
           <div style={{ fontSize: 14, fontWeight: 950 }}>
@@ -822,7 +1107,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                       <button
                         onClick={() => toggleEdit(matchId)}
                         style={{
-                          fontSize: 12,
+                          fontSize: 14,
                           padding: "4px 8px",
                           borderRadius: 10,
                           border: "1px solid #ddd",
@@ -921,7 +1206,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                               >
                                 <span
                                   style={{
-                                    fontSize: 12,
+                                    fontSize: 14,
                                     fontWeight: 900,
                                     padding: "4px 10px",
                                     borderRadius: 999,
@@ -989,7 +1274,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                               >
                                 <span
                                   style={{
-                                    fontSize: 12,
+                                    fontSize: 14,
                                     fontWeight: 900,
                                     padding: "4px 10px",
                                     borderRadius: 999,
@@ -1086,7 +1371,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                                         {yes > 0 ? (
                                           <span
                                             style={{
-                                              fontSize: 12,
+                                              fontSize: 14,
                                               fontWeight: 900,
                                               padding: "4px 10px",
                                               borderRadius: 999,
@@ -1101,7 +1386,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                                         {no > 0 ? (
                                           <span
                                             style={{
-                                              fontSize: 12,
+                                              fontSize: 14,
                                               fontWeight: 900,
                                               padding: "4px 10px",
                                               borderRadius: 999,
@@ -1135,7 +1420,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                                     >
                                       <span
                                         style={{
-                                          fontSize: 12,
+                                          fontSize: 14,
                                           fontWeight: 900,
                                           padding: "4px 10px",
                                           borderRadius: 999,
@@ -1183,7 +1468,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                         <button
                           onClick={() => setMatchMarket(matchId, undefined)}
                           style={{
-                            fontSize: 12,
+                            fontSize: 14,
                             padding: "6px 10px",
                             borderRadius: 10,
                             border: "1px solid #ddd",
@@ -1205,11 +1490,11 @@ export function BracketView({ bracket, setBracket }: Props) {
                     )
                   ) : (
                     <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 12, fontWeight: 800 }}>
+                      <div style={{ fontSize: 14, fontWeight: 800 }}>
                         Market
                       </div>
                       <div
-                        style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}
+                        style={{ marginTop: 6, fontSize: 14, opacity: 0.75 }}
                       >
                         Attach markets for <b>Round of {bracket.size}</b> first
                         (Round 1) to lock team names.
@@ -1256,7 +1541,7 @@ export function BracketView({ bracket, setBracket }: Props) {
               <button
                 onClick={closeTradeModal}
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   padding: "6px 10px",
                   borderRadius: 10,
                   border: "1px solid #ddd",
@@ -1269,14 +1554,14 @@ export function BracketView({ bracket, setBracket }: Props) {
               </button>
             </div>
 
-            <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.3 }}>
+            <div style={{ fontSize: 14, opacity: 0.8, lineHeight: 1.3 }}>
               {tradeModal.kind === "event"
                 ? "Event market: you can simulate buying YES or NO on this team."
                 : "Match market: simulate buying YES on this team’s outcome token."}
             </div>
 
             <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 12, fontWeight: 900 }}>Shares</div>
+              <div style={{ fontSize: 14, fontWeight: 900 }}>Shares</div>
               <input
                 value={tradeSharesStr}
                 onChange={(e) => setTradeSharesStr(e.target.value)}
@@ -1287,10 +1572,123 @@ export function BracketView({ bracket, setBracket }: Props) {
                   border: "1px solid #ccc",
                   background: "white",
                   color: "black",
-                  fontSize: 12,
+                  fontSize: 14,
                 }}
               />
             </div>
+
+            {tradeModal.kind === "event"
+              ? (() => {
+                  const m = bracket.matchesById[tradeModal.matchId];
+                  const ems = m?.market?.event?.markets;
+                  if (!Array.isArray(ems)) return null;
+
+                  const noTid = tradeModal.noTokenId;
+                  if (!noTid) return null;
+
+                  const heldNo = simPosByTokenId[noTid]?.no ?? 0;
+                  if (heldNo <= 0) return null;
+
+                  // Determine how many "other" YES markets exist to convert into
+                  const otherYes = ems
+                    .filter(
+                      (mk) =>
+                        String(mk?.clobTokenIds?.[1] ?? "") !== String(noTid),
+                    )
+                    .map((mk) => mk?.clobTokenIds?.[0])
+                    .filter(Boolean);
+
+                  if (otherYes.length === 0) return null;
+
+                  return (
+                    <div
+                      style={{
+                        borderTop: "1px solid #eee",
+                        paddingTop: 10,
+                        display: "grid",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontSize: 14, fontWeight: 950 }}>
+                        Convert NO → YES (other event markets)
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: 14,
+                          opacity: 0.85,
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        For demonstrative purposes, we convert NO shares on this
+                        team into YES shares across the remaining markets in the
+                        same event (equal split).
+                      </div>
+
+                      <div style={{ display: "grid", gap: 6 }}>
+                        <div style={{ fontSize: 14, fontWeight: 900 }}>
+                          NO shares to convert (max {fmtShares(heldNo)})
+                        </div>
+                        <input
+                          value={convertSharesStr}
+                          onChange={(e) => setConvertSharesStr(e.target.value)}
+                          placeholder={String(heldNo)}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            border: "1px solid #ccc",
+                            background: "white",
+                            color: "black",
+                            fontSize: 14,
+                          }}
+                        />
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          const amt = parseSharesOrNull(convertSharesStr);
+                          if (!amt) {
+                            window.alert(
+                              "Enter a positive number of NO shares to convert.",
+                            );
+                            return;
+                          }
+                          if (amt > heldNo + 1e-9) {
+                            window.alert(
+                              "That exceeds your NO shares for this market.",
+                            );
+                            return;
+                          }
+
+                          const res = convertEventNoToYesOthers(
+                            ems,
+                            noTid,
+                            amt,
+                          );
+                          if (!res.ok) {
+                            window.alert(res.reason ?? "Conversion failed.");
+                            return;
+                          }
+
+                          closeTradeModal();
+                        }}
+                        style={{
+                          fontSize: 14,
+                          padding: "12px 14px",
+                          borderRadius: 12,
+                          border: "1px solid #ddd",
+                          background: "white",
+                          cursor: "pointer",
+                          fontWeight: 950,
+                          width: "fit-content",
+                        }}
+                      >
+                        Convert
+                      </button>
+                    </div>
+                  );
+                })()
+              : null}
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button
@@ -1321,7 +1719,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                   closeTradeModal();
                 }}
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   padding: "10px 12px",
                   borderRadius: 12,
                   border: "1px solid #c9f2c9",
@@ -1345,13 +1743,23 @@ export function BracketView({ bracket, setBracket }: Props) {
                       window.alert("Missing NO token id for this event row.");
                       return;
                     }
+                    if (!tradeModal.yesTokenId) {
+                      window.alert("Missing YES token id for this event row.");
+                      return;
+                    }
 
-                    const mid = midByTokenId[tradeModal.noTokenId];
-                    const cost = computeCostUsd(mid, "NO", shares);
-                    if (cost === null) {
+                    const yesMidStr = midByTokenId[tradeModal.yesTokenId];
+                    if (!yesMidStr) {
                       window.alert("Price unavailable.");
                       return;
                     }
+                    const pYes = Number(yesMidStr);
+                    if (!Number.isFinite(pYes)) {
+                      window.alert("Price unavailable.");
+                      return;
+                    }
+
+                    const cost = (1 - pYes) * shares; // NO price is 1 - YES price
                     if (usdcBalance < cost) {
                       window.alert("Insufficient USDC balance.");
                       return;
@@ -1362,7 +1770,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                     closeTradeModal();
                   }}
                   style={{
-                    fontSize: 12,
+                    fontSize: 14,
                     padding: "10px 12px",
                     borderRadius: 12,
                     border: "1px solid #f2c9c9",
@@ -1374,6 +1782,171 @@ export function BracketView({ bracket, setBracket }: Props) {
                   Buy NO
                 </button>
               ) : null}
+              {(() => {
+                // Compute mergeability for THIS popup row
+                let mergeMax = 0;
+                let mergeLabel: string | null = null;
+
+                if (tradeModal.kind === "event") {
+                  const yid = tradeModal.yesTokenId;
+                  const nid = tradeModal.noTokenId;
+                  if (yid && nid) {
+                    const y = simPosByTokenId[yid]?.yes ?? 0;
+                    const n = simPosByTokenId[nid]?.no ?? 0;
+                    mergeMax = Math.min(y, n);
+                    if (mergeMax > 0)
+                      mergeLabel = "Merge YES+NO (complete sets)";
+                  }
+                } else {
+                  const m = bracket.matchesById[tradeModal.matchId];
+                  const toks = m?.market?.clobTokenIds;
+
+                  const otherTeamId =
+                    tradeModal.teamId === m?.teamAId ? m?.teamBId : m?.teamAId;
+
+                  const otherTokRaw =
+                    (otherTeamId
+                      ? m?.outcomeTokenIdByTeamId?.[otherTeamId]
+                      : undefined) ??
+                    (Array.isArray(toks) && toks.length >= 2
+                      ? String(
+                          tradeModal.teamId === m?.teamAId ? toks[1] : toks[0],
+                        )
+                      : null);
+
+                  const thisTok = tradeModal.yesTokenId;
+                  const otherTok = otherTokRaw ? String(otherTokRaw) : null;
+
+                  if (thisTok && otherTok) {
+                    const a = simPosByTokenId[thisTok]?.yes ?? 0;
+                    const b = simPosByTokenId[otherTok]?.yes ?? 0;
+                    mergeMax = Math.min(a, b);
+                    if (mergeMax > 0) {
+                      const otherName =
+                        otherTeamId && bracket.teamsById[otherTeamId]
+                          ? bracket.teamsById[otherTeamId].name
+                          : "other team";
+                      mergeLabel = `Merge YES(this team) + YES(${otherName}) (complete sets)`;
+                    }
+                  }
+                }
+
+                if (mergeMax <= 0) return null;
+
+                return (
+                  <div
+                    style={{
+                      borderTop: "1px solid #eee",
+                      paddingTop: 10,
+                      display: "grid",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ fontSize: 14, fontWeight: 950 }}>Merge</div>
+                    <div
+                      style={{ fontSize: 14, opacity: 0.8, lineHeight: 1.3 }}
+                    >
+                      {mergeLabel}. You’ll receive <b>$1 USDC</b> per merged
+                      share.
+                    </div>
+
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ fontSize: 14, fontWeight: 900 }}>
+                        Shares to merge (max {fmtShares(mergeMax)})
+                      </div>
+                      <input
+                        value={mergeSharesStr}
+                        onChange={(e) => setMergeSharesStr(e.target.value)}
+                        placeholder={String(mergeMax)}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #ccc",
+                          background: "white",
+                          color: "black",
+                          fontSize: 14,
+                        }}
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const shares = parseSharesOrNull(mergeSharesStr);
+                        if (!shares) {
+                          window.alert(
+                            "Enter a positive number of shares to merge.",
+                          );
+                          return;
+                        }
+                        if (shares > mergeMax + 1e-9) {
+                          window.alert(
+                            "That exceeds the max mergeable shares.",
+                          );
+                          return;
+                        }
+
+                        if (tradeModal.kind === "event") {
+                          const yid = tradeModal.yesTokenId;
+                          const nid = tradeModal.noTokenId;
+                          if (!yid || !nid) {
+                            window.alert("Missing token ids for merge.");
+                            return;
+                          }
+                          mergeEventPair(yid, nid, shares);
+                          closeTradeModal();
+                          return;
+                        }
+
+                        // market kind
+                        const m = bracket.matchesById[tradeModal.matchId];
+                        const toks = m?.market?.clobTokenIds;
+
+                        const otherTeamId =
+                          tradeModal.teamId === m?.teamAId
+                            ? m?.teamBId
+                            : m?.teamAId;
+
+                        const otherTokRaw =
+                          (otherTeamId
+                            ? m?.outcomeTokenIdByTeamId?.[otherTeamId]
+                            : undefined) ??
+                          (Array.isArray(toks) && toks.length >= 2
+                            ? String(
+                                tradeModal.teamId === m?.teamAId
+                                  ? toks[1]
+                                  : toks[0],
+                              )
+                            : null);
+
+                        const thisTok = tradeModal.yesTokenId;
+                        const otherTok = otherTokRaw
+                          ? String(otherTokRaw)
+                          : null;
+
+                        if (!thisTok || !otherTok) {
+                          window.alert("Missing token ids for merge.");
+                          return;
+                        }
+
+                        mergeMatchPair(thisTok, otherTok, shares);
+                        closeTradeModal();
+                      }}
+                      style={{
+                        fontSize: 14,
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: "1px solid #ddd",
+                        background: "white",
+                        cursor: "pointer",
+                        fontWeight: 950,
+                        width: "fit-content",
+                      }}
+                    >
+                      Merge (get USDC back)
+                    </button>
+                  </div>
+                );
+              })()}
 
               {canMarkWinnerNow(tradeModal.matchId) ? (
                 <button
@@ -1386,7 +1959,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                     closeTradeModal();
                   }}
                   style={{
-                    fontSize: 12,
+                    fontSize: 14,
                     padding: "10px 12px",
                     borderRadius: 12,
                     border: "1px solid #ddd",
@@ -1434,7 +2007,7 @@ export function BracketView({ bracket, setBracket }: Props) {
             <button
               onClick={() => setHedgeTutorOpen(false)}
               style={{
-                fontSize: 12,
+                fontSize: 14,
                 padding: "4px 8px",
                 borderRadius: 10,
                 border: "1px solid #ddd",
@@ -1447,13 +2020,13 @@ export function BracketView({ bracket, setBracket }: Props) {
             </button>
           </div>
 
-          <div style={{ fontSize: 12, fontWeight: 900 }}>
+          <div style={{ fontSize: 14, fontWeight: 900 }}>
             {HEDGE_STEPS[hedgeStepIdx]?.title ?? "Hedge"}
           </div>
 
           <div
             style={{
-              fontSize: 12,
+              fontSize: 14,
               opacity: 0.85,
               lineHeight: 1.35,
               minHeight: 46,
@@ -1476,8 +2049,8 @@ export function BracketView({ bracket, setBracket }: Props) {
                   advanceHedgeStep();
                 }}
                 style={{
-                  fontSize: 12,
-                  padding: "10px 12px",
+                  fontSize: 14,
+                  padding: "12px 14px",
                   borderRadius: 12,
                   border: "1px solid #c9f2c9",
                   background: "#e9fbe9",
@@ -1487,55 +2060,11 @@ export function BracketView({ bracket, setBracket }: Props) {
               >
                 {HEDGE_STEPS[hedgeStepIdx]?.actionLabel ?? "Execute"}
               </button>
-
-              <button
-                onClick={() => {
-                  appendHedgeNote(
-                    `Skipped: ${HEDGE_STEPS[hedgeStepIdx]?.title ?? "Step"}`,
-                  );
-                  advanceHedgeStep();
-                }}
-                style={{
-                  fontSize: 12,
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  background: "white",
-                  cursor: "pointer",
-                  fontWeight: 950,
-                }}
-              >
-                Skip
-              </button>
-            </div>
-          ) : null}
-
-          {hedgeNotes.length > 0 ? (
-            <div
-              style={{
-                borderTop: "1px solid #eee",
-                paddingTop: 10,
-                display: "grid",
-                gap: 6,
-                maxHeight: 160,
-                overflow: "auto",
-              }}
-            >
-              <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
-                Output
-              </div>
-              <div
-                style={{ fontSize: 12, whiteSpace: "pre-wrap", opacity: 0.85 }}
-              >
-                {hedgeNotes.map((l, i) => (
-                  <div key={i}>• {l}</div>
-                ))}
-              </div>
             </div>
           ) : null}
 
           {hedgePhase === "done" ? (
-            <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.85 }}>
               Done.
             </div>
           ) : null}
@@ -1576,7 +2105,7 @@ export function BracketView({ bracket, setBracket }: Props) {
               <button
                 onClick={closeHedgePrompt}
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   padding: "6px 10px",
                   borderRadius: 10,
                   border: "1px solid #ddd",
@@ -1589,7 +2118,7 @@ export function BracketView({ bracket, setBracket }: Props) {
               </button>
             </div>
 
-            <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.35 }}>
+            <div style={{ fontSize: 14, opacity: 0.85, lineHeight: 1.35 }}>
               Do you want to learn how Correl hedges?
             </div>
 
@@ -1600,7 +2129,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                   startHedgeTutor();
                 }}
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   padding: "10px 12px",
                   borderRadius: 12,
                   border: "1px solid #ddd",
@@ -1615,7 +2144,7 @@ export function BracketView({ bracket, setBracket }: Props) {
               <button
                 onClick={runHedgeNow}
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   padding: "10px 12px",
                   borderRadius: 12,
                   border: "1px solid #c9f2c9",

@@ -133,6 +133,23 @@ export default function Home() {
     });
   }
 
+  function handleDeleteActive() {
+    setStore((prev) => {
+      const id = prev.activeId;
+      if (!id) return prev;
+
+      const { [id]: _deleted, ...rest } = prev.entriesById;
+
+      const remainingIds = Object.keys(rest);
+      const nextActiveId = remainingIds.length > 0 ? remainingIds[0] : null;
+
+      return {
+        activeId: nextActiveId,
+        entriesById: rest,
+      };
+    });
+  }
+
   return (
     <main style={{ padding: 24, fontFamily: "ui-sans-serif, system-ui" }}>
       <div
@@ -195,6 +212,22 @@ export default function Home() {
             }}
           >
             Create Bracket
+          </button>
+
+          <button
+            onClick={handleDeleteActive}
+            disabled={!store.activeId}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              background: store.activeId ? "#dc2626" : "#fca5a5",
+              color: "white",
+              fontWeight: 700,
+              opacity: store.activeId ? 1 : 0.7,
+              cursor: store.activeId ? "pointer" : "not-allowed",
+            }}
+          >
+            Delete Bracket
           </button>
         </div>
       </div>
