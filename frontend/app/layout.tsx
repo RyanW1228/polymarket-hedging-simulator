@@ -2,6 +2,7 @@
 
 import type { Metadata } from "next";
 import "./globals.css";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "Correl v1",
@@ -22,7 +23,7 @@ export default function RootLayout({
           margin: 0,
         }}
       >
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

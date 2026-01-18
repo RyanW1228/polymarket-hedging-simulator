@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import type { BracketState, Id, MarketRef } from "../bracket/types";
 import { MatchMarketSearch } from "./MatchMarketSearch";
 import { getActiveTeamIdsForMatch } from "../bracket/active";
+import { PositionsPanel } from "./PositionsPanel";
 
 type Props = {
   bracket: BracketState;
@@ -97,6 +98,10 @@ export function BracketView({ bracket, setBracket }: Props) {
 
   // tokenId -> midpoint string (e.g. "0.5234")
   const [midByTokenId, setMidByTokenId] = useState<Record<string, string>>({});
+  // tokenId -> base-units string position (ERC-1155 units)
+  const [positionsByTokenId, setPositionsByTokenId] = useState<
+    Record<string, string>
+  >({});
 
   function refreshOdds() {
     // Drop cached mids so the fetch effect refetches all needed tokenIds
@@ -304,6 +309,18 @@ export function BracketView({ bracket, setBracket }: Props) {
     }
     return Array.from(new Set(ids));
   }, [bracket]);
+
+  const positionsSummary = useMemo(() => {
+    const needed = tokenIdsNeeded;
+    if (needed.length === 0) return { needed: 0, provided: 0 };
+
+    let provided = 0;
+    for (const tid of needed) {
+      const v = positionsByTokenId[String(tid)];
+      if (v && String(v).trim() !== "" && String(v) !== "0") provided += 1;
+    }
+    return { needed: needed.length, provided };
+  }, [tokenIdsNeeded, positionsByTokenId]);
 
   useEffect(() => {
     let cancelled = false;
