@@ -48,30 +48,43 @@ function makeDefaultTitle(n: number) {
 export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
 
-  const [store, setStore] = useState<BracketsStore>(() => {
-    // 1) Try to load the new multi-bracket store
-    const loaded = safeJsonParse<BracketsStore>(
-      localStorage.getItem(BRACKETS_STORAGE_KEY),
-    );
-    if (loaded && loaded.entriesById) return loaded;
+  const [store, setStore] = useState<BracketsStore>(() => ({
+    activeId: null,
+    entriesById: {},
+  }));
 
-    // 2) Migrate from legacy single-bracket storage if present
-    const legacy = safeJsonParse<BracketState>(
-      localStorage.getItem(LEGACY_SINGLE_BRACKET_KEY),
-    );
-    if (legacy) {
-      const id = newId();
-      const entry: BracketEntry = {
-        id,
-        title: "Tournament 1",
-        bracket: legacy,
-      };
-      return { activeId: id, entriesById: { [id]: entry } };
+  // Load store from localStorage on the client (SSR-safe)
+  useEffect(() => {
+    try {
+      // 1) Try to load the new multi-bracket store
+      const loaded = safeJsonParse<BracketsStore>(
+        localStorage.getItem(BRACKETS_STORAGE_KEY),
+      );
+      if (loaded && loaded.entriesById) {
+        setStore(loaded);
+        return;
+      }
+
+      // 2) Migrate from legacy single-bracket storage if present
+      const legacy = safeJsonParse<BracketState>(
+        localStorage.getItem(LEGACY_SINGLE_BRACKET_KEY),
+      );
+      if (legacy) {
+        const id = newId();
+        const entry: BracketEntry = {
+          id,
+          title: "Tournament 1",
+          bracket: legacy,
+        };
+        setStore({ activeId: id, entriesById: { [id]: entry } });
+        return;
+      }
+
+      // 3) Otherwise keep empty default
+    } catch {
+      // ignore storage failures
     }
-
-    // 3) Otherwise start empty
-    return { activeId: null, entriesById: {} };
-  });
+  }, []);
 
   // Persist store
   useEffect(() => {
