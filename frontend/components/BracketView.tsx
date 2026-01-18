@@ -6,12 +6,13 @@ import React, { useEffect, useMemo, useState } from "react";
 import type { BracketState, Id, MarketRef } from "../bracket/types";
 import { MatchMarketSearch } from "./MatchMarketSearch";
 import { getActiveTeamIdsForMatch } from "../bracket/active";
-import { PositionsPanel } from "./PositionsPanel";
 
 type Props = {
   bracket: BracketState;
   setBracket: (next: BracketState) => void;
 };
+
+const SIM_POS_STORAGE_KEY = "correl.simPosByTokenId.v1";
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
@@ -98,10 +99,64 @@ export function BracketView({ bracket, setBracket }: Props) {
 
   // tokenId -> midpoint string (e.g. "0.5234")
   const [midByTokenId, setMidByTokenId] = useState<Record<string, string>>({});
-  // tokenId -> base-units string position (ERC-1155 units)
-  const [positionsByTokenId, setPositionsByTokenId] = useState<
-    Record<string, string>
+
+  // Simulated positions:
+  // tokenId -> { yesShares, noShares } (numbers for demo)
+  const [simPosByTokenId, setSimPosByTokenId] = useState<
+    Record<string, { yes: number; no: number }>
   >({});
+
+  // Popup state (what did the user click?)
+  const [tradeModal, setTradeModal] = useState<null | {
+    matchId: Id;
+    teamId: Id;
+    teamName: string;
+    kind: "event" | "market";
+    yesTokenId: string | null; // token to buy YES on (always exists for market kind)
+    noTokenId: string | null; // only relevant for event kind
+  }>(null);
+
+  const [tradeSharesStr, setTradeSharesStr] = useState<string>("1");
+
+  // Load simulated positions on refresh
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SIM_POS_STORAGE_KEY);
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw) as Record<
+        string,
+        { yes: number; no: number }
+      >;
+      if (!parsed || typeof parsed !== "object") return;
+
+      // Basic shape guard
+      const cleaned: Record<string, { yes: number; no: number }> = {};
+      for (const [tokenId, v] of Object.entries(parsed)) {
+        const yes = Number((v as any)?.yes ?? 0);
+        const no = Number((v as any)?.no ?? 0);
+        if (!Number.isFinite(yes) || !Number.isFinite(no)) continue;
+        if (yes === 0 && no === 0) continue;
+        cleaned[String(tokenId)] = { yes, no };
+      }
+
+      setSimPosByTokenId(cleaned);
+    } catch {
+      // ignore corrupted storage
+    }
+  }, []);
+
+  // Persist simulated positions
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SIM_POS_STORAGE_KEY,
+        JSON.stringify(simPosByTokenId),
+      );
+    } catch {
+      // ignore quota / private mode failures
+    }
+  }, [simPosByTokenId]);
 
   function refreshOdds() {
     // Drop cached mids so the fetch effect refetches all needed tokenIds
@@ -286,6 +341,80 @@ export function BracketView({ bracket, setBracket }: Props) {
     setMatchWinner(matchId, teamId);
   }
 
+  function fmtShares(x: number): string {
+    if (!Number.isFinite(x) || x <= 0) return "0";
+    // nice display: 1, 1.5, 2.25 etc.
+    const s = x.toFixed(3);
+    return s.replace(/\.?0+$/, "");
+  }
+
+  function parseSharesOrNull(s: string): number | null {
+    const x = Number(String(s).trim());
+    if (!Number.isFinite(x) || x <= 0) return null;
+    return x;
+  }
+
+  function addSimPosition(tokenId: string, side: "YES" | "NO", shares: number) {
+    setSimPosByTokenId((prev) => {
+      const cur = prev[tokenId] ?? { yes: 0, no: 0 };
+      const next =
+        side === "YES"
+          ? { yes: cur.yes + shares, no: cur.no }
+          : { yes: cur.yes, no: cur.no + shares };
+      return { ...prev, [tokenId]: next };
+    });
+  }
+
+  function openTradeModalForTeam(matchId: Id, teamId: Id) {
+    const m = bracket.matchesById[matchId];
+    const team = bracket.teamsById[teamId];
+    if (!m || !team) return;
+
+    // 1) EVENT market case: we want BOTH YES and NO tokenIds from the matched binary market
+    if (m.market?.event && Array.isArray(m.market.event.markets)) {
+      const best = pickBestEventMarketForTeam(
+        m.market.event.markets,
+        team.name,
+      );
+      const yesTid = best?.clobTokenIds?.[0]
+        ? String(best.clobTokenIds[0])
+        : null;
+      const noTid = best?.clobTokenIds?.[1]
+        ? String(best.clobTokenIds[1])
+        : null;
+
+      setTradeSharesStr("1");
+      setTradeModal({
+        matchId,
+        teamId,
+        teamName: team.name,
+        kind: "event",
+        yesTokenId: yesTid,
+        noTokenId: noTid,
+      });
+      return;
+    }
+
+    // 2) Normal attached market case: each team corresponds to its own outcome tokenId.
+    // Prefer the per-team mapping if present (Round 1 sets it).
+    const mappedTok = m.outcomeTokenIdByTeamId?.[teamId];
+    const yesTok = mappedTok ? String(mappedTok) : null;
+
+    setTradeSharesStr("1");
+    setTradeModal({
+      matchId,
+      teamId,
+      teamName: team.name,
+      kind: "market",
+      yesTokenId: yesTok,
+      noTokenId: null,
+    });
+  }
+
+  function closeTradeModal() {
+    setTradeModal(null);
+  }
+
   const tokenIdsNeeded = useMemo(() => {
     const ids: string[] = [];
     for (const matchId of Object.keys(bracket.matchesById)) {
@@ -309,18 +438,6 @@ export function BracketView({ bracket, setBracket }: Props) {
     }
     return Array.from(new Set(ids));
   }, [bracket]);
-
-  const positionsSummary = useMemo(() => {
-    const needed = tokenIdsNeeded;
-    if (needed.length === 0) return { needed: 0, provided: 0 };
-
-    let provided = 0;
-    for (const tid of needed) {
-      const v = positionsByTokenId[String(tid)];
-      if (v && String(v).trim() !== "" && String(v) !== "0") provided += 1;
-    }
-    return { needed: needed.length, provided };
-  }, [tokenIdsNeeded, positionsByTokenId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -395,6 +512,26 @@ export function BracketView({ bracket, setBracket }: Props) {
           }}
         >
           Refresh Odds
+        </button>
+        <button
+          onClick={() => {
+            setSimPosByTokenId({});
+            try {
+              localStorage.removeItem(SIM_POS_STORAGE_KEY);
+            } catch {}
+          }}
+          style={{
+            fontSize: 12,
+            padding: "6px 10px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: "pointer",
+            fontWeight: 800,
+            marginLeft: 8,
+          }}
+        >
+          Clear Positions
         </button>
       </div>
 
@@ -491,7 +628,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                         placeholder={teamA ? "Team name" : "—"}
                         disabled={!teamA}
                         style={{
-                          padding: "10px 12px",
+                          padding: "6px 12px",
                           borderRadius: 10,
                           border: "1px solid #ccc",
                           background: !teamA ? "#f7f7f7" : "white",
@@ -509,7 +646,7 @@ export function BracketView({ bracket, setBracket }: Props) {
                         placeholder={teamB ? "Team name" : "—"}
                         disabled={!teamB}
                         style={{
-                          padding: "10px 12px",
+                          padding: "6px 12px",
                           borderRadius: 10,
                           border: "1px solid #ccc",
                           background: !teamB ? "#f7f7f7" : "white",
@@ -523,10 +660,10 @@ export function BracketView({ bracket, setBracket }: Props) {
                       <div
                         onClick={() => {
                           if (!teamA) return;
-                          tryToggleWinnerWithConfirm(matchId, teamA.id);
+                          openTradeModalForTeam(matchId, teamA.id);
                         }}
                         style={{
-                          padding: "10px 12px",
+                          padding: "6px 12px",
                           borderRadius: 10,
                           color: "black",
                           display: "flex",
@@ -542,7 +679,43 @@ export function BracketView({ bracket, setBracket }: Props) {
                           userSelect: "none",
                         }}
                       >
-                        <span>{teamA?.name ?? "—"}</span>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div>{teamA?.name ?? "—"}</div>
+                          {(() => {
+                            const tok =
+                              m.outcomeTokenIdByTeamId?.[teamA?.id ?? ""];
+                            const tid = tok ? String(tok) : null;
+                            if (!tid) return null;
+
+                            const pos = simPosByTokenId[tid];
+                            const yes = pos?.yes ?? 0;
+                            if (yes <= 0) return null;
+
+                            return (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 6,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 900,
+                                    padding: "4px 10px",
+                                    borderRadius: 999,
+                                    background: "#e9fbe9",
+                                    border: "1px solid #c9f2c9",
+                                  }}
+                                >
+                                  YES {fmtShares(yes)}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+
                         <span style={{ fontWeight: 800 }}>
                           {m.winnerId
                             ? m.winnerId === teamA?.id
@@ -555,10 +728,10 @@ export function BracketView({ bracket, setBracket }: Props) {
                       <div
                         onClick={() => {
                           if (!teamB) return;
-                          tryToggleWinnerWithConfirm(matchId, teamB.id);
+                          openTradeModalForTeam(matchId, teamB.id);
                         }}
                         style={{
-                          padding: "10px 12px",
+                          padding: "6px 12px",
                           borderRadius: 10,
                           color: "black",
                           display: "flex",
@@ -574,7 +747,43 @@ export function BracketView({ bracket, setBracket }: Props) {
                           userSelect: "none",
                         }}
                       >
-                        <span>{teamB?.name ?? "—"}</span>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div>{teamB?.name ?? "—"}</div>
+                          {(() => {
+                            const tok =
+                              m.outcomeTokenIdByTeamId?.[teamB?.id ?? ""];
+                            const tid = tok ? String(tok) : null;
+                            if (!tid) return null;
+
+                            const pos = simPosByTokenId[tid];
+                            const yes = pos?.yes ?? 0;
+                            if (yes <= 0) return null;
+
+                            return (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 6,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 900,
+                                    padding: "4px 10px",
+                                    borderRadius: 999,
+                                    background: "#e9fbe9",
+                                    border: "1px solid #c9f2c9",
+                                  }}
+                                >
+                                  YES {fmtShares(yes)}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+
                         <span style={{ fontWeight: 800 }}>
                           {m.winnerId
                             ? m.winnerId === teamB?.id
@@ -600,10 +809,10 @@ export function BracketView({ bracket, setBracket }: Props) {
                             <div
                               key={t.id}
                               onClick={() =>
-                                tryToggleWinnerWithConfirm(matchId, t.id)
+                                openTradeModalForTeam(matchId, t.id)
                               }
                               style={{
-                                padding: "10px 12px",
+                                padding: "6px 12px",
                                 borderRadius: 10,
                                 color: "black",
                                 display: "flex",
@@ -617,7 +826,109 @@ export function BracketView({ bracket, setBracket }: Props) {
                                 userSelect: "none",
                               }}
                             >
-                              <span>{t.name}</span>
+                              <div style={{ display: "grid", gap: 6 }}>
+                                <div>{t.name}</div>
+
+                                {(() => {
+                                  // EVENT row: show both YES and NO pills if user bought them.
+                                  if (
+                                    m.market?.event &&
+                                    Array.isArray(m.market.event.markets)
+                                  ) {
+                                    const best = pickBestEventMarketForTeam(
+                                      m.market.event.markets,
+                                      t.name,
+                                    );
+                                    const yesTid = best?.clobTokenIds?.[0]
+                                      ? String(best.clobTokenIds[0])
+                                      : null;
+                                    const noTid = best?.clobTokenIds?.[1]
+                                      ? String(best.clobTokenIds[1])
+                                      : null;
+
+                                    const yes = yesTid
+                                      ? (simPosByTokenId[yesTid]?.yes ?? 0)
+                                      : 0;
+                                    const no = noTid
+                                      ? (simPosByTokenId[noTid]?.no ?? 0)
+                                      : 0;
+
+                                    if (yes <= 0 && no <= 0) return null;
+
+                                    return (
+                                      <div
+                                        style={{
+                                          display: "flex",
+                                          gap: 6,
+                                          flexWrap: "wrap",
+                                        }}
+                                      >
+                                        {yes > 0 ? (
+                                          <span
+                                            style={{
+                                              fontSize: 12,
+                                              fontWeight: 900,
+                                              padding: "4px 10px",
+                                              borderRadius: 999,
+                                              background: "#e9fbe9",
+                                              border: "1px solid #c9f2c9",
+                                            }}
+                                          >
+                                            YES {fmtShares(yes)}
+                                          </span>
+                                        ) : null}
+
+                                        {no > 0 ? (
+                                          <span
+                                            style={{
+                                              fontSize: 12,
+                                              fontWeight: 900,
+                                              padding: "4px 10px",
+                                              borderRadius: 999,
+                                              background: "#ffe9e9",
+                                              border: "1px solid #f2c9c9",
+                                            }}
+                                          >
+                                            NO {fmtShares(no)}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  }
+
+                                  // Non-event row: only show YES pill for that team's mapped token (if available)
+                                  const tok = m.outcomeTokenIdByTeamId?.[t.id];
+                                  const tid = tok ? String(tok) : null;
+                                  if (!tid) return null;
+
+                                  const pos = simPosByTokenId[tid];
+                                  const yes = pos?.yes ?? 0;
+                                  if (yes <= 0) return null;
+
+                                  return (
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: 6,
+                                        flexWrap: "wrap",
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          fontSize: 12,
+                                          fontWeight: 900,
+                                          padding: "4px 10px",
+                                          borderRadius: 999,
+                                          background: "#e9fbe9",
+                                          border: "1px solid #c9f2c9",
+                                        }}
+                                      >
+                                        YES {fmtShares(yes)}
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                               <span style={{ fontWeight: 800 }}>
                                 {m.winnerId
                                   ? isWinner
@@ -691,6 +1002,160 @@ export function BracketView({ bracket, setBracket }: Props) {
           </div>
         ))}
       </div>
+      {/* Trade / Resolve modal */}
+      {tradeModal ? (
+        <div
+          onClick={closeTradeModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            display: "grid",
+            placeItems: "center",
+            padding: 16,
+            zIndex: 50,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(520px, 100%)",
+              borderRadius: 16,
+              border: "1px solid #ddd",
+              background: "white",
+              padding: 14,
+              display: "grid",
+              gap: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ fontWeight: 950, fontSize: 14 }}>
+                {tradeModal.teamName}
+              </div>
+              <button
+                onClick={closeTradeModal}
+                style={{
+                  fontSize: 12,
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ddd",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.3 }}>
+              {tradeModal.kind === "event"
+                ? "Event market: you can simulate buying YES or NO on this team."
+                : "Match market: simulate buying YES on this team’s outcome token."}
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900 }}>Shares</div>
+              <input
+                value={tradeSharesStr}
+                onChange={(e) => setTradeSharesStr(e.target.value)}
+                placeholder="e.g. 1"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                  background: "white",
+                  color: "black",
+                  fontSize: 12,
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  const shares = parseSharesOrNull(tradeSharesStr);
+                  if (!shares) {
+                    window.alert("Enter a positive number of shares.");
+                    return;
+                  }
+                  if (!tradeModal.yesTokenId) {
+                    window.alert("Missing YES token id for this row.");
+                    return;
+                  }
+                  addSimPosition(tradeModal.yesTokenId, "YES", shares);
+                  closeTradeModal();
+                }}
+                style={{
+                  fontSize: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid #c9f2c9",
+                  background: "#e9fbe9",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                Buy YES
+              </button>
+
+              {tradeModal.kind === "event" ? (
+                <button
+                  onClick={() => {
+                    const shares = parseSharesOrNull(tradeSharesStr);
+                    if (!shares) {
+                      window.alert("Enter a positive number of shares.");
+                      return;
+                    }
+                    if (!tradeModal.noTokenId) {
+                      window.alert("Missing NO token id for this event row.");
+                      return;
+                    }
+                    addSimPosition(tradeModal.noTokenId, "NO", shares);
+                    closeTradeModal();
+                  }}
+                  style={{
+                    fontSize: 12,
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #f2c9c9",
+                    background: "#ffe9e9",
+                    cursor: "pointer",
+                    fontWeight: 950,
+                  }}
+                >
+                  Buy NO
+                </button>
+              ) : null}
+
+              {canMarkWinnerNow(tradeModal.matchId) ? (
+                <button
+                  onClick={() => {
+                    // Resolve / set winner to 100% (uses your existing rules + confirm)
+                    tryToggleWinnerWithConfirm(
+                      tradeModal.matchId,
+                      tradeModal.teamId,
+                    );
+                    closeTradeModal();
+                  }}
+                  style={{
+                    fontSize: 12,
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #ddd",
+                    background: "white",
+                    cursor: "pointer",
+                    fontWeight: 950,
+                  }}
+                >
+                  Resolve to 100%
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
