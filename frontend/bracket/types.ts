@@ -26,6 +26,15 @@ export type EventRef = {
   markets: EventMarketLite[];
 };
 
+export type EventMarket = {
+  // Polymarket event market title, e.g. "Rams win the Super Bowl"
+  title?: string;
+
+  // Polymarket clob token IDs:
+  // [YES, NO] for binary markets
+  clobTokenIds?: (string | number)[];
+};
+
 export type MarketRef = {
   query: string;
 
