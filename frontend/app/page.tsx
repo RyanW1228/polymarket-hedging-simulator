@@ -144,9 +144,26 @@ export default function Home() {
           flexWrap: "wrap",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Correl</h1>
+        {/* Left: Bigger title */}
+        <h1
+          style={{
+            fontSize: 36,
+            fontWeight: 900,
+            margin: 0,
+            lineHeight: 1,
+          }}
+        >
+          Correl
+        </h1>
 
+        {/* Right: Dropdown then Create Bracket */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
           {Object.keys(store.entriesById).length > 0 && (
             <select
               value={store.activeId ?? ""}
@@ -166,20 +183,20 @@ export default function Home() {
               ))}
             </select>
           )}
-        </div>
 
-        <button
-          onClick={() => setPanelOpen(true)}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            background: "#111",
-            color: "white",
-            fontWeight: 700,
-          }}
-        >
-          Create Bracket
-        </button>
+          <button
+            onClick={() => setPanelOpen(true)}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              background: "#111",
+              color: "white",
+              fontWeight: 700,
+            }}
+          >
+            Create Bracket
+          </button>
+        </div>
       </div>
 
       <CreateBracketPanel

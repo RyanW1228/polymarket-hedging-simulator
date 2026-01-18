@@ -13,6 +13,8 @@ type Props = {
 };
 
 const SIM_POS_STORAGE_KEY = "correl.simPosByTokenId.v1";
+const USDC_STORAGE_KEY = "correl.simUsdcBalance.v1";
+const DEFAULT_USDC_BALANCE = 10000;
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
@@ -117,6 +119,82 @@ export function BracketView({ bracket, setBracket }: Props) {
   }>(null);
 
   const [tradeSharesStr, setTradeSharesStr] = useState<string>("1");
+  const [hedgeOpen, setHedgeOpen] = useState(false);
+  const [learnOpen, setLearnOpen] = useState(false);
+
+  const [usdcBalance, setUsdcBalance] = useState<number>(DEFAULT_USDC_BALANCE);
+
+  type HedgeStep = {
+    id:
+      | "mergePairs"
+      | "normalizeExposure"
+      | "computeHedge"
+      | "netComplementary";
+    title: string;
+    text: string;
+    requiresAction?: boolean;
+    actionLabel?: string;
+  };
+
+  const HEDGE_STEPS: HedgeStep[] = [
+    {
+      id: "mergePairs",
+      title: "Step 1 — Merge YES/NO pairs",
+      text: "All YES/NO pairs on the same binary market are merged into (a) risk-free complete sets and (b) any remaining directional exposure.",
+      requiresAction: true,
+      actionLabel: "Execute merge",
+    },
+    {
+      id: "normalizeExposure",
+      title: "Step 2 — Normalize to true exposure",
+      text: "All equivalent token positions are summed and converted to YES exposure so we can calculate true exposure across the tournament.",
+      requiresAction: true,
+      actionLabel: "Compute normalized exposure",
+    },
+    {
+      id: "computeHedge",
+      title: "Step 3 — Compute hedges (main game markets)",
+      text: "For each exposure component, we compute the needed hedge using your formula — and we only use the main game markets for best liquidity.",
+      requiresAction: true,
+      actionLabel: "Compute hedge trades",
+    },
+    {
+      id: "netComplementary",
+      title: "Step 4 — Net complementary hedges",
+      text: "All complementary token positions are eliminated. If hedging says buy overlapping complementary positions, we net them down to the minimal set of buys.",
+      requiresAction: true,
+      actionLabel: "Net complementary buys",
+    },
+  ];
+
+  const [hedgeTutorOpen, setHedgeTutorOpen] = useState(false);
+  const [hedgeStepIdx, setHedgeStepIdx] = useState(0);
+  const [hedgeTyped, setHedgeTyped] = useState("");
+  const [hedgePhase, setHedgePhase] = useState<
+    "typing" | "await_action" | "done"
+  >("typing");
+  const [hedgeNotes, setHedgeNotes] = useState<string[]>([]);
+
+  // Load USDC balance
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(USDC_STORAGE_KEY);
+      if (!raw) return;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) setUsdcBalance(n);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Persist USDC balance
+  useEffect(() => {
+    try {
+      localStorage.setItem(USDC_STORAGE_KEY, String(usdcBalance));
+    } catch {
+      // ignore
+    }
+  }, [usdcBalance]);
 
   // Load simulated positions on refresh
   useEffect(() => {
@@ -415,6 +493,65 @@ export function BracketView({ bracket, setBracket }: Props) {
     setTradeModal(null);
   }
 
+  function executeHedgeStep(stepId: HedgeStep["id"]) {
+    if (stepId === "mergePairs") {
+      appendHedgeNote("Step 1 executed: merged YES/NO pairs (stub).");
+      return;
+    }
+
+    if (stepId === "normalizeExposure") {
+      appendHedgeNote(
+        "Step 2 executed: computed normalized YES exposure (stub).",
+      );
+      return;
+    }
+
+    if (stepId === "computeHedge") {
+      appendHedgeNote(
+        "Step 3 executed: computed hedge trades from formula (stub).",
+      );
+      appendHedgeNote("Recommended trades: (none yet — formula hook pending).");
+      return;
+    }
+
+    if (stepId === "netComplementary") {
+      appendHedgeNote("Step 4 executed: netted complementary buys (stub).");
+      return;
+    }
+  }
+
+  function startHedgeTutor() {
+    setHedgeTutorOpen(true);
+    setHedgeStepIdx(0);
+    setHedgeTyped("");
+    setHedgePhase("typing");
+    setHedgeNotes([]);
+  }
+
+  function appendHedgeNote(line: string) {
+    setHedgeNotes((prev) => [...prev, line]);
+  }
+
+  function advanceHedgeStep() {
+    setHedgeTyped("");
+    if (hedgeStepIdx + 1 >= HEDGE_STEPS.length) {
+      setHedgePhase("done");
+      return;
+    }
+    setHedgeStepIdx((i) => i + 1);
+    setHedgePhase("typing");
+  }
+
+  function closeHedgePrompt() {
+    setHedgeOpen(false);
+  }
+
+  function runHedgeNow() {
+    // Step 2 will compute + recommend token buys here.
+    // For now, just close the prompt so UX is correct.
+    setHedgeOpen(false);
+  }
+
   const tokenIdsNeeded = useMemo(() => {
     const ids: string[] = [];
     for (const matchId of Object.keys(bracket.matchesById)) {
@@ -488,6 +625,35 @@ export function BracketView({ bracket, setBracket }: Props) {
     };
   }, [tokenIdsNeeded, midByTokenId]);
 
+  // Hedge tutor typewriter
+  useEffect(() => {
+    if (!hedgeTutorOpen) return;
+    if (hedgePhase !== "typing") return;
+
+    const step = HEDGE_STEPS[hedgeStepIdx];
+    if (!step) return;
+
+    let i = 0;
+    const full = step.text;
+
+    const timer = window.setInterval(() => {
+      i += 1;
+      setHedgeTyped(full.slice(0, i));
+      if (i >= full.length) {
+        window.clearInterval(timer);
+        setHedgePhase(step.requiresAction ? "await_action" : "typing");
+        if (!step.requiresAction) {
+          window.setTimeout(() => {
+            advanceHedgeStep();
+          }, 500);
+        }
+      }
+    }, 12);
+
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hedgeTutorOpen, hedgePhase, hedgeStepIdx]);
+
   const round1MatchIds = bracket.roundMatchIds[0] ?? [];
   const round1Ready =
     round1MatchIds.length > 0 &&
@@ -533,6 +699,40 @@ export function BracketView({ bracket, setBracket }: Props) {
         >
           Clear Positions
         </button>
+        <button
+          onClick={() => setHedgeOpen(true)}
+          style={{
+            fontSize: 12,
+            padding: "6px 10px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: "pointer",
+            fontWeight: 800,
+            marginLeft: 8,
+          }}
+        >
+          Hedge Positions
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          border: "1px solid #eee",
+          background: "white",
+          borderRadius: 12,
+          padding: "10px 12px",
+        }}
+      >
+        <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
+          USDC Balance
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 950 }}>
+          ${usdcBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+        </div>
       </div>
 
       {/* Rounds row */}
@@ -1152,6 +1352,234 @@ export function BracketView({ bracket, setBracket }: Props) {
                   Resolve to 100%
                 </button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {/* Bottom-right hedge tutor box */}
+      {hedgeTutorOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            width: 360,
+            maxWidth: "calc(100vw - 32px)",
+            borderRadius: 16,
+            border: "1px solid #ddd",
+            background: "white",
+            padding: 12,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+            zIndex: 70,
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 13 }}>
+              Hedging Assistant
+            </div>
+            <button
+              onClick={() => setHedgeTutorOpen(false)}
+              style={{
+                fontSize: 12,
+                padding: "4px 8px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "white",
+                cursor: "pointer",
+                fontWeight: 900,
+              }}
+            >
+              Close
+            </button>
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 900 }}>
+            {HEDGE_STEPS[hedgeStepIdx]?.title ?? "Hedge"}
+          </div>
+
+          <div
+            style={{
+              fontSize: 12,
+              opacity: 0.85,
+              lineHeight: 1.35,
+              minHeight: 46,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {hedgeTyped}
+            {hedgePhase === "typing" ? (
+              <span style={{ opacity: 0.5 }}>▍</span>
+            ) : null}
+          </div>
+
+          {hedgePhase === "await_action" ? (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  const step = HEDGE_STEPS[hedgeStepIdx];
+                  if (!step) return;
+                  executeHedgeStep(step.id);
+                  advanceHedgeStep();
+                }}
+                style={{
+                  fontSize: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid #c9f2c9",
+                  background: "#e9fbe9",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                {HEDGE_STEPS[hedgeStepIdx]?.actionLabel ?? "Execute"}
+              </button>
+
+              <button
+                onClick={() => {
+                  appendHedgeNote(
+                    `Skipped: ${HEDGE_STEPS[hedgeStepIdx]?.title ?? "Step"}`,
+                  );
+                  advanceHedgeStep();
+                }}
+                style={{
+                  fontSize: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid #ddd",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                Skip
+              </button>
+            </div>
+          ) : null}
+
+          {hedgeNotes.length > 0 ? (
+            <div
+              style={{
+                borderTop: "1px solid #eee",
+                paddingTop: 10,
+                display: "grid",
+                gap: 6,
+                maxHeight: 160,
+                overflow: "auto",
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
+                Output
+              </div>
+              <div
+                style={{ fontSize: 12, whiteSpace: "pre-wrap", opacity: 0.85 }}
+              >
+                {hedgeNotes.map((l, i) => (
+                  <div key={i}>• {l}</div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {hedgePhase === "done" ? (
+            <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>
+              Done.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Hedge Positions prompt */}
+      {hedgeOpen ? (
+        <div
+          onClick={closeHedgePrompt}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            display: "grid",
+            placeItems: "center",
+            padding: 16,
+            zIndex: 55, // above the trade modal backdrop (50)
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(520px, 100%)",
+              borderRadius: 16,
+              border: "1px solid #ddd",
+              background: "white",
+              padding: 14,
+              display: "grid",
+              gap: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ fontWeight: 950, fontSize: 14 }}>
+                Hedge Positions
+              </div>
+              <button
+                onClick={closeHedgePrompt}
+                style={{
+                  fontSize: 12,
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ddd",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.35 }}>
+              Do you want to learn how Correl hedges?
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  setHedgeOpen(false);
+                  startHedgeTutor();
+                }}
+                style={{
+                  fontSize: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid #ddd",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                Yes.
+              </button>
+
+              <button
+                onClick={runHedgeNow}
+                style={{
+                  fontSize: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid #c9f2c9",
+                  background: "#e9fbe9",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                No, just do it.
+              </button>
             </div>
           </div>
         </div>
