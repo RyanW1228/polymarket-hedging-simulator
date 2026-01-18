@@ -432,6 +432,19 @@ export function BracketView({ bracket, setBracket }: Props) {
     return x;
   }
 
+  function computeCostUsd(
+    midStr: string | null | undefined,
+    side: "YES" | "NO",
+    shares: number,
+  ): number | null {
+    if (!midStr) return null;
+    const p = Number(midStr);
+    if (!Number.isFinite(p)) return null;
+
+    const price = side === "YES" ? p : 1 - p;
+    return price * shares;
+  }
+
   function addSimPosition(tokenId: string, side: "YES" | "NO", shares: number) {
     setSimPosByTokenId((prev) => {
       const cur = prev[tokenId] ?? { yes: 0, no: 0 };
@@ -663,75 +676,82 @@ export function BracketView({ bracket, setBracket }: Props) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      {/* Top row above rounds */}
-      <div>
-        <button
-          onClick={refreshOdds}
-          style={{
-            fontSize: 12,
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: "white",
-            cursor: "pointer",
-            fontWeight: 800,
-          }}
-        >
-          Refresh Odds
-        </button>
-        <button
-          onClick={() => {
-            setSimPosByTokenId({});
-            try {
-              localStorage.removeItem(SIM_POS_STORAGE_KEY);
-            } catch {}
-          }}
-          style={{
-            fontSize: 12,
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: "white",
-            cursor: "pointer",
-            fontWeight: 800,
-            marginLeft: 8,
-          }}
-        >
-          Clear Positions
-        </button>
-        <button
-          onClick={() => setHedgeOpen(true)}
-          style={{
-            fontSize: 12,
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: "white",
-            cursor: "pointer",
-            fontWeight: 800,
-            marginLeft: 8,
-          }}
-        >
-          Hedge Positions
-        </button>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          border: "1px solid #eee",
-          background: "white",
-          borderRadius: 12,
-          padding: "10px 12px",
-        }}
-      >
-        <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
-          USDC Balance
+      {/* Top row above rounds + USDC balance (same width as buttons row) */}
+      <div style={{ width: "fit-content", display: "grid", gap: 12 }}>
+        <div>
+          <button
+            onClick={refreshOdds}
+            style={{
+              fontSize: 12,
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            Refresh Odds
+          </button>
+          <button
+            onClick={() => {
+              setSimPosByTokenId({});
+              try {
+                localStorage.removeItem(SIM_POS_STORAGE_KEY);
+              } catch {}
+            }}
+            style={{
+              fontSize: 12,
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+              marginLeft: 8,
+            }}
+          >
+            Clear Positions
+          </button>
+          <button
+            onClick={() => setHedgeOpen(true)}
+            style={{
+              fontSize: 12,
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+              marginLeft: 8,
+            }}
+          >
+            Hedge Positions
+          </button>
         </div>
-        <div style={{ fontSize: 14, fontWeight: 950 }}>
-          ${usdcBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            border: "1px solid #eee",
+            background: "white",
+            borderRadius: 12,
+            padding: "10px 12px",
+            maxWidth: 260,
+            width: "100%",
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
+            USDC Balance
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 950 }}>
+            $
+            {usdcBalance.toLocaleString(undefined, {
+              maximumFractionDigits: 2,
+            })}
+          </div>
         </div>
       </div>
 
@@ -1284,6 +1304,19 @@ export function BracketView({ bracket, setBracket }: Props) {
                     window.alert("Missing YES token id for this row.");
                     return;
                   }
+
+                  const mid = midByTokenId[tradeModal.yesTokenId];
+                  const cost = computeCostUsd(mid, "YES", shares);
+                  if (cost === null) {
+                    window.alert("Price unavailable.");
+                    return;
+                  }
+                  if (usdcBalance < cost) {
+                    window.alert("Insufficient USDC balance.");
+                    return;
+                  }
+
+                  setUsdcBalance((b) => b - cost);
                   addSimPosition(tradeModal.yesTokenId, "YES", shares);
                   closeTradeModal();
                 }}
@@ -1312,6 +1345,19 @@ export function BracketView({ bracket, setBracket }: Props) {
                       window.alert("Missing NO token id for this event row.");
                       return;
                     }
+
+                    const mid = midByTokenId[tradeModal.noTokenId];
+                    const cost = computeCostUsd(mid, "NO", shares);
+                    if (cost === null) {
+                      window.alert("Price unavailable.");
+                      return;
+                    }
+                    if (usdcBalance < cost) {
+                      window.alert("Insufficient USDC balance.");
+                      return;
+                    }
+
+                    setUsdcBalance((b) => b - cost);
                     addSimPosition(tradeModal.noTokenId, "NO", shares);
                     closeTradeModal();
                   }}
