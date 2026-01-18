@@ -1778,14 +1778,14 @@ export function HedgeDemoPanel(props: Props) {
       const trades = netAndConsolidateTrades([...direct, ...model]);
 
       let text = `Step 3 — What will change (preview)\n\n`;
-      text += `Selected exposure (first nonzero YES row):\n`;
-      text += `• ${firstNonZero.team}\n`;
-      text += `• Shares held: ${fmtShares(firstNonZero.sharesYes)}\n`;
-      if (firstNonZero.pPre !== null) {
-        text += `• Current implied probability ≈ ${(
-          firstNonZero.pPre * 100
-        ).toFixed(2)}%\n`;
+      text += `All exposures (nonzero YES rows in this event):\n`;
+
+      for (const e of snap.exposures) {
+        text += `• ${e.teamName}\n`;
+        text += `  • Shares held: ${fmtShares(e.sharesYes)}\n`;
+        text += `  • Current implied probability ≈ ${(e.pPre * 100).toFixed(2)}%\n`;
       }
+
       text += `\nPlanned buys (before execution):\n`;
 
       const labelMap = buildTokenLabelMapFromSnapshot(snap);
