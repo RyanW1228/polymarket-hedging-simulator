@@ -151,7 +151,14 @@ export default function Home() {
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "ui-sans-serif, system-ui" }}>
+    <main
+      style={{
+        padding: 24,
+        fontFamily: "ui-sans-serif, system-ui",
+        background: "#f4f7fb", // blueish-white
+        minHeight: "100vh",
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -238,7 +245,15 @@ export default function Home() {
         onCreate={handleCreate}
       />
 
-      <div style={{ marginTop: 18 }}>
+      <div
+        style={{
+          marginTop: 18,
+          background: "white",
+          borderRadius: 16,
+          padding: 16,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.06)",
+        }}
+      >
         {!activeEntry ? (
           <div style={{ opacity: 0.8 }}>
             Click <b>Create Bracket</b> to generate a bracket.

@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import type { BracketState, Id, MarketRef } from "../bracket/types";
 import { MatchMarketSearch } from "./MatchMarketSearch";
 import { getActiveTeamIdsForMatch } from "../bracket/active";
+import { HedgeDemoPanel } from "./HedgeDemoPanel";
 
 type Props = {
   bracket: BracketState;
@@ -123,6 +124,8 @@ export function BracketView({ bracket, setBracket }: Props) {
   const [convertSharesStr, setConvertSharesStr] = useState<string>("");
 
   const [usdcBalance, setUsdcBalance] = useState<number>(DEFAULT_USDC_BALANCE);
+
+  const [hedgeDemoOpen, setHedgeDemoOpen] = useState(false);
 
   // Load USDC balance
   useEffect(() => {
@@ -457,6 +460,80 @@ export function BracketView({ bracket, setBracket }: Props) {
     });
   }
 
+  function previewMergeAllPossible(): { usdcBack: number; lines: string[] } {
+    const lines: string[] = [];
+    let usdcBack = 0;
+
+    // local snapshot (NO mutation)
+    const cur = simPosByTokenId;
+    const next: Record<string, { yes: number; no: number }> = clone(cur);
+
+    // ---- 1) Match markets: YES(teamA) + YES(teamB)
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const toks = m.market?.clobTokenIds;
+
+      if (!Array.isArray(toks) || toks.length < 2) continue;
+
+      const t0 = String(toks[0]);
+      const t1 = String(toks[1]);
+
+      const y0 = next[t0]?.yes ?? 0;
+      const y1 = next[t1]?.yes ?? 0;
+
+      const amt = Math.min(y0, y1);
+      if (amt <= 0) continue;
+
+      next[t0] = { ...(next[t0] ?? { yes: 0, no: 0 }), yes: y0 - amt };
+      next[t1] = { ...(next[t1] ?? { yes: 0, no: 0 }), yes: y1 - amt };
+
+      usdcBack += amt;
+
+      const label =
+        m.market?.title ??
+        m.market?.event?.title ??
+        `Match ${matchId.slice(0, 6)}`;
+      lines.push(
+        `Will merge ${fmtShares(amt)} complete sets (match): ${label}`,
+      );
+    }
+
+    // ---- 2) Event markets: YES(yesTid) + NO(noTid)
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const ems = m.market?.event?.markets;
+      if (!Array.isArray(ems)) continue;
+
+      for (const em of ems) {
+        const yesTidRaw = em?.clobTokenIds?.[0];
+        const noTidRaw = em?.clobTokenIds?.[1];
+        if (!yesTidRaw || !noTidRaw) continue;
+
+        const yesTid = String(yesTidRaw);
+        const noTid = String(noTidRaw);
+
+        const y = next[yesTid]?.yes ?? 0;
+        const n = next[noTid]?.no ?? 0;
+
+        const amt = Math.min(y, n);
+        if (amt <= 0) continue;
+
+        next[yesTid] = { ...(next[yesTid] ?? { yes: 0, no: 0 }), yes: y - amt };
+        next[noTid] = { ...(next[noTid] ?? { yes: 0, no: 0 }), no: n - amt };
+
+        usdcBack += amt;
+
+        const label =
+          em?.title ?? m.market?.event?.title ?? `Event ${matchId.slice(0, 6)}`;
+        lines.push(
+          `Will merge ${fmtShares(amt)} complete sets (event): ${label}`,
+        );
+      }
+    }
+
+    return { usdcBack, lines };
+  }
+
   // Merge EVERYTHING possible (used by Hedge Step 1)
   function mergeAllPossible(): { usdcBack: number; lines: string[] } {
     const lines: string[] = [];
@@ -588,6 +665,71 @@ export function BracketView({ bracket, setBracket }: Props) {
     });
 
     return { ok: true };
+  }
+
+  function previewNormalizeAllEventNoToYes(): {
+    converted: number;
+    lines: string[];
+  } {
+    const lines: string[] = [];
+    let converted = 0;
+
+    // local snapshot (NO mutation)
+    const next: Record<string, { yes: number; no: number }> =
+      clone(simPosByTokenId);
+
+    for (const matchId of Object.keys(bracket.matchesById)) {
+      const m = bracket.matchesById[matchId];
+      const ems = m.market?.event?.markets;
+      if (!Array.isArray(ems) || ems.length < 2) continue;
+
+      for (const mk of ems) {
+        const noTidRaw = mk?.clobTokenIds?.[1];
+        if (!noTidRaw) continue;
+        const noTid = String(noTidRaw);
+
+        const heldNo = next[noTid]?.no ?? 0;
+        if (heldNo <= 0) continue;
+
+        // find the "self" market (the one whose NO token is noTid)
+        const self = ems.find(
+          (x) => String(x?.clobTokenIds?.[1] ?? "") === String(noTid),
+        );
+        if (!self) continue;
+
+        const otherYesTokenIds = Array.from(
+          new Set(
+            ems
+              .filter((x) => x !== self)
+              .map((x) => x?.clobTokenIds?.[0])
+              .filter((x): x is string => Boolean(x))
+              .map(String),
+          ),
+        );
+
+        if (otherYesTokenIds.length === 0) continue;
+
+        // simulate: subtract NO
+        const curNo = next[noTid] ?? { yes: 0, no: 0 };
+        next[noTid] = { ...curNo, no: Math.max(0, (curNo.no ?? 0) - heldNo) };
+
+        // simulate: add YES to each other market (same rule as your real convert fn)
+        for (const yesTid of otherYesTokenIds) {
+          const curYes = next[yesTid] ?? { yes: 0, no: 0 };
+          next[yesTid] = { ...curYes, yes: (curYes.yes ?? 0) + heldNo };
+        }
+
+        converted += heldNo;
+
+        const label =
+          mk?.title ?? m.market?.event?.title ?? `Event ${matchId.slice(0, 6)}`;
+        lines.push(
+          `Will convert ${fmtShares(heldNo)} NO → YES on ${otherYesTokenIds.length} other markets (event): ${label}`,
+        );
+      }
+    }
+
+    return { converted, lines };
   }
 
   // Step 2 helper: normalize ALL event NO positions -> YES of other event markets
@@ -831,7 +973,7 @@ export function BracketView({ bracket, setBracket }: Props) {
     <div style={{ display: "grid", gap: 12 }}>
       {/* Top row above rounds + USDC balance (same width as buttons row) */}
       <div style={{ width: "fit-content", display: "grid", gap: 12 }}>
-        <div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button
             onClick={refreshOdds}
             style={{
@@ -846,19 +988,51 @@ export function BracketView({ bracket, setBracket }: Props) {
           >
             Refresh Odds
           </button>
+
           <button
             onClick={() => {
-              if (!hasNonMainGameTokens) {
-                window.alert(
-                  "You don’t currently hold any non-main market tokens.\n\n" +
-                    "Main game markets have enough liquidity that you can usually liquidate exposure directly.",
-                );
-                return;
-              }
-              window.alert("Hedging Assistant coming back shortly.");
+              setHedgeDemoOpen(true);
+              window.dispatchEvent(new Event("correl:open-hedge-demo"));
+            }}
+            style={{
+              fontSize: 14,
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
             }}
           >
             Hedge Positions
+          </button>
+
+          <button
+            onClick={() => {
+              // Clear simulated positions + reset USDC to 10000
+              setSimPosByTokenId({});
+              setUsdcBalance(DEFAULT_USDC_BALANCE);
+              try {
+                localStorage.setItem(SIM_POS_STORAGE_KEY, JSON.stringify({}));
+                localStorage.setItem(
+                  USDC_STORAGE_KEY,
+                  String(DEFAULT_USDC_BALANCE),
+                );
+              } catch {
+                // ignore
+              }
+            }}
+            style={{
+              fontSize: 14,
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            Clear Positions
           </button>
         </div>
 
@@ -1354,6 +1528,27 @@ export function BracketView({ bracket, setBracket }: Props) {
           </div>
         ))}
       </div>
+
+      {hedgeDemoOpen ? (
+        <HedgeDemoPanel
+          bracket={bracket}
+          simPosByTokenId={simPosByTokenId}
+          addSimPosition={addSimPosition}
+          midByTokenId={midByTokenId}
+          usdcBalance={usdcBalance}
+          setUsdcBalance={setUsdcBalance}
+          getMid={getMid}
+          fmtPct={fmtPct}
+          fmtShares={fmtShares}
+          computeCostUsd={computeCostUsd}
+          norm={norm}
+          mergeAllPossible={mergeAllPossible}
+          normalizeAllEventNoToYes={normalizeAllEventNoToYes}
+          previewMergeAllPossible={previewMergeAllPossible}
+          previewNormalizeAllEventNoToYes={previewNormalizeAllEventNoToYes}
+        />
+      ) : null}
+
       {/* Trade / Resolve modal */}
       {tradeModal ? (
         <div
